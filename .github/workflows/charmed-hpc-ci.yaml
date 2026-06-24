@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: charmed-hpc/.github/.github/actions/setup-just@main
+      - uses: canonical/hpc-team/.github/actions/setup-just@main
       - if: inputs.setup-commands != ''
         run: ${{ inputs.setup-commands }}
       - run: just check
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: charmed-hpc/.github/.github/actions/setup-just@main
+      - uses: canonical/hpc-team/.github/actions/setup-just@main
       - if: inputs.setup-commands != ''
         run: ${{ inputs.setup-commands }}
       - run: just test
