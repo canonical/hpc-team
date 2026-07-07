@@ -38,7 +38,29 @@ The generated `README.md` must follow this structure exactly:
 ```markdown
 # <repo-name> agentic skills
 
-A collection of GitHub Copilot agent skills for <domain> development workflows.
+A collection of agent skills for <domain> development workflows.
+
+## How to use the HPC team's agentic skills
+
+1. Locate the skill you want
+
+    Browse the root directory of this repository to find the specific skill directory
+    you want to use (for example, `.agents/skills/create-charm-terraform-module`).
+
+2. Copy to your .agents/skills/ directory
+
+   Create an `.agents/skills/` directory in your target project if it doesn't already exist, and
+   then copy the skill directory into it.
+
+   > Pro tip: You can copy the skill directory to a global _~/.agents/skills_ directory if
+   > you do not want to commit or vendor skills in your target project.
+
+   ```shell
+   mkdir -p /path/to/your-project/.agents/skills/
+   cp -r /path/to/this-repo/.agents/skills/chosen-skill-folder /path/to/your-project/.agents/skills/
+   ```
+
+---
 
 ## Skills
 
@@ -49,13 +71,13 @@ A collection of GitHub Copilot agent skills for <domain> development workflows.
 
 ---
 
-## <name>
+### <name>
 
 <introductory paragraph from the skill's SKILL.md>
 
 Refer to [<directory>/SKILL.md](<directory>/SKILL.md) for the full <description of what the skill covers>.
 
-### When to use
+#### When to use
 
 Invoke this skill when <argument-hint, rephrased as prose>.
 ```
