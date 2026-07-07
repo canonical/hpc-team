@@ -1,6 +1,6 @@
 ---
 name: update-agents-skills-readme
-description: 'Update the README.md in .agents/skills/ when Copilot agent skills are added, removed, or modified. Use when the set of skills under .agents/skills/ changes and the README must be regenerated to reflect the current state.'
+description: 'Update the README.md in .agents/skills/ when agent skills are added, removed, or modified. Use when the set of skills under .agents/skills/ changes and the README must be regenerated to reflect the current state.'
 argument-hint: 'Path to the .agents/skills/ directory, or leave blank to use the default location.'
 ---
 
@@ -23,9 +23,9 @@ When to use
 
 3. **Read the introduction.** Extract the first heading and the introductory paragraph(s) immediately following it for the per-skill summary.
 
-4. **Read the Process section.** Summarize the numbered steps from the "Process" section (or "Workflow" section) into a concise bullet list for the per-skill "Summary" section.
+4. **Read the Process section.** Summarize the numbered steps from the "Process" section (or "Workflow" section) into a concise statement for the per-skill "When to use" section.
 
-5. **Read the Constraints section.** Extract the key constraint rules (DO/DON'T statements) for the per-skill "Key constraints" section.
+5. **Read the Constraints section.** Extract the key constraint rules (DO/DON'T statements) for the per-skill "When to use" section.
 
 6. **Regenerate the README.** Write the `README.md` file at `.agents/skills/README.md` following the output format below.
 
@@ -53,33 +53,19 @@ A collection of GitHub Copilot agent skills for <domain> development workflows.
 
 <introductory paragraph from the skill's SKILL.md>
 
+Refer to [<directory>/SKILL.md](<directory>/SKILL.md) for the full <description of what the skill covers>.
+
 ### When to use
 
 Invoke this skill when <argument-hint, rephrased as prose>.
-
-### Summary
-
-1. <first step of the process>
-2. <second step of the process>
-3. ...
-
-### Key constraints
-
-- <constraint 1>
-- <constraint 2>
-- ...
-
-See [<directory>/SKILL.md](<directory>/SKILL.md) for the full <description of what the skill covers>.
 ```
 
 ### Per-skill section rules
 
 - The heading must be the skill `name` from the YAML frontmatter.
 - The introductory paragraph must be the first paragraph after the top-level heading in the `SKILL.md`.
+- The line after the introductory paragraph must be a "Refer to" link pointing to the full `SKILL.md`.
 - The "When to use" section must rephrase the `argument-hint` as natural prose.
-- The "Summary" section must list the Process/Workflow steps as a numbered bullet list.
-- The "Key constraints" section must extract the most important DO/DON'T rules from the Constraints section.
-- The final line must be a "See" link pointing to the full `SKILL.md`.
 
 ### Skills table rules
 
@@ -91,8 +77,6 @@ See [<directory>/SKILL.md](<directory>/SKILL.md) for the full <description of wh
 
 - If a subdirectory under `.agents/skills/` does not contain a `SKILL.md` file, skip it.
 - If a `SKILL.md` file does not have YAML frontmatter, use the directory name as the skill name and the first sentence of the introduction as the description.
-- If a `SKILL.md` file has no "Process" or "Workflow" section, omit the "Summary" section for that skill.
-- If a `SKILL.md` file has no "Constraints" section, omit the "Key constraints" section for that skill.
 - The `argument-hint` may contain instructions to "ASK THE USER BEFORE PROCEEDING". In that case, rephrase it to describe the context in which the skill should be invoked.
 
 ## Constraints
