@@ -1,6 +1,6 @@
 # HPC team agentic skills
 
-A collection of GitHub Copilot agent skills for Charmed HPC development workflows.
+A collection of agent skills for Charmed HPC development workflows.
 
 ## Skills
 
