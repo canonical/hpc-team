@@ -1,4 +1,4 @@
-# hpc-team-gitgud agentic skills
+# HPC team agentic skills
 
 A collection of GitHub Copilot agent skills for Charmed HPC development workflows.
 
