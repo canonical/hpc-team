@@ -9,15 +9,20 @@ Apply this skill when the user asks to migrate a charm (or a monorepo of charms)
 
 ## Prerequisites — Juju snap and controller version
 
-Before starting, verify both the **juju snap** and the **Juju controller** are recent enough. There are two distinct version-gate issues on 26.04. If either check fails, **ask the user whether they want the upgrade performed automatically or whether they will do it manually** before proceeding.
+Before starting, verify both the **juju snap** and the **Juju controller** are recent enough. There are two distinct version-gate issues on 26.04. The required versions are:
 
-### 1. Juju snap must contain the `/sbin` fix (>= 3.6/edge)
+- **Juju snap**: revision **3.6.26-14dcb65** (snap rev 35559) or newer. Revision **3.6.25** (snap rev 35378) has a `/sbin` unlinking bug and is **not** sufficient.
+- **Juju controller**: newer than **3.6.25** (i.e. >= 3.6.26). Controllers running **3.6.25** or older (for example 3.6.4) do not recognize `ubuntu@26.04` as a valid base.
 
-The `3.6/stable` juju snap (revision **3.6.25**, snap rev 35378, as of 2026-07-16) has a bug where it incorrectly unlinks the `/sbin` -> `/usr/sbin` merged-usr symlink on Ubuntu 26.04 (Resolute). This breaks `snapd`, which looks for mount helpers (`mount.fuse`, `mount.fuse3`) in `/sbin`, and therefore breaks any charm that installs snaps at runtime. The fix is in `3.6/edge` (revision **3.6.26-14dcb65**, snap rev 35559) and later.
+If either check fails, **ask the user whether they want the upgrade performed automatically or whether they will do it manually** before proceeding.
+
+### 1. Juju snap must contain the `/sbin` fix (>= revision 3.6.26-14dcb65)
+
+Juju snap revision **3.6.25** (snap rev 35378) has a bug where it incorrectly unlinks the `/sbin` -> `/usr/sbin` merged-usr symlink on Ubuntu 26.04 (Resolute). This breaks `snapd`, which looks for mount helpers (`mount.fuse`, `mount.fuse3`) in `/sbin`, and therefore breaks any charm that installs snaps at runtime. The fix is in revision **3.6.26-14dcb65** (snap rev 35559) and later.
 
 Tracked at https://github.com/juju/juju/issues/22713
 
-**Check:** run `snap info juju` and compare the `installed:` line against `3.6/edge`. The installed snap must be at least as new as the current `3.6/edge` revision. If the installed version is `3.6.25` (stable) or older, it has the bug.
+**Check:** run `snap info juju` and compare the `installed:` line against revision **3.6.26-14dcb65**. The installed snap must be at least as new as that revision. If the installed version is **3.6.25** or older, it has the bug.
 
 ```bash
 snap info juju | grep -E "installed:|3\.6/edge:|3\.6/stable:"
@@ -48,7 +53,12 @@ If either check fails, the juju snap and controller must be upgraded **in lockst
 
 - **Automatic** (if the user consents):
   ```bash
-  sudo snap refresh juju --channel 3.6/edge   # or 3.6/stable once the fix promotes
+  sudo snap refresh juju   # refreshes to the latest revision of the currently tracked channel
+  juju upgrade-controller
+  ```
+  If the user is tracking a channel that does not yet contain the fix (for example the older `2.9/stable` track), switch to a channel that provides revision **3.6.26-14dcb65** or newer first:
+  ```bash
+  sudo snap refresh juju --channel 3.6/stable
   juju upgrade-controller
   ```
   Then re-run both checks above to confirm.
@@ -196,52 +206,13 @@ This fails because `mv` treats the last argument as a destination directory, but
 
 ### What to do
 
-If the command runner used in the repo (e.g. `just`, `tox`, `make`, a custom script) requires any change to support multiple bases, adjust it accordingly. The fix is to select the packed artifact matching the `--base` passed to the integration tests instead of globbing. For a justfile recipe using the `*args` variadic parameter, this looks like:
-
-```make
-# Run integration tests
-[group("test")]
-integration *args: lock
-    #!/usr/bin/env bash
-    set -euxo pipefail
-
-    charmcraft -v pack
-
-    # `charmcraft pack` produces one charm file per platform (e.g.
-    # `<charm>_ubuntu@24.04-amd64.charm` and `<charm>_ubuntu@26.04-amd64.charm`).
-    # Select the charm matching the `--base` passed to the integration tests so
-    # that `LOCAL_<CHARM>` points at the correct multi-base artifact.
-    base="ubuntu@24.04"
-    # Parse `--base <value>` or `--base=<value>` out of the captured args.
-    set -- {{args}}
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --base=*) base="${1#--base=}"; shift ;;
-            --base) base="$2"; shift 2 ;;
-            *) shift ;;
-        esac
-    done
-    charm_name="<charm>_${base}-amd64.charm"
-    if [ ! -f "$charm_name" ]; then
-        echo "error: packed charm '$charm_name' not found for base '$base'" >&2
-        exit 1
-    fi
-    mv "$charm_name" <charm>.charm
-    export LOCAL_<CHARM>={{project_dir / "<charm>.charm"}}
-    {{uv_run}} pytest \
-        -v \
-        --tb native \
-        -s \
-        --log-cli-level=INFO \
-        {{args}} \
-        {{tests_dir / "integration"}}
-```
+If the command runner used in the repo (e.g. `just`, `tox`, `make`, a custom script) requires any change to support multiple bases, adjust it accordingly. The fix is to select the packed artifact matching the `--base` passed to the integration tests instead of globbing: parse the base value out of the test arguments, construct the expected filename, verify it exists, and point the test suite at that file.
 
 Notes:
-- The packed filename format is `<charm>_<base>-<arch>.charm` where `<base>` already includes the `ubuntu@` prefix (e.g. `ubuntu@24.04`). Do **not** prepend `ubuntu@` again when constructing `charm_name`.
-- If the integration test conftest defaults `--base` to `ubuntu@24.04`, the recipe default above matches.
+- The packed filename format is `<charm>_<base>-<arch>.charm` where `<base>` already includes the `ubuntu@` prefix (e.g. `ubuntu@24.04`). Do **not** prepend `ubuntu@` again when constructing the filename.
+- If the integration test conftest defaults `--base` to a specific base, the runner's default base should match it.
 - For architectures other than amd64, adjust the `-amd64` suffix accordingly, or derive it from the platform list in `charmcraft.yaml`.
-- For repos using `tox`, `make`, or a custom script instead of `just`, apply the same logic — parse the base from the test args and select the matching artifact.
+- The exact implementation depends on the repo's command runner (`just`, `tox`, `make`, or a custom script) and its existing build and test commands — adapt the logic to the project rather than copying a recipe verbatim.
 
 ## Part 5 — `pyproject.toml`: tool configuration
 
@@ -300,19 +271,7 @@ This applies to all jobs: unit tests, integration tests, release/publish, lint, 
 
 ### Juju channel in CI
 
-If the CI workflow sets up a Juju operator environment (e.g. via `charmed-kubernetes/actions-operator`) and pins `juju-channel: 3.6/stable`, this will hit the `/sbin` unlinking bug on the 26.04 runner (see Prerequisites). Change it to `3.6/edge` until the fix promotes to stable:
-
-```yaml
-# before
-with:
-  juju-channel: 3.6/stable
-
-# after
-with:
-  juju-channel: 3.6/edge
-```
-
-Coordinate with the user if this is a shared/reusable workflow that other repos depend on.
+If the CI workflow sets up a Juju operator environment (e.g. via `charmed-kubernetes/actions-operator`), verify that the pinned `juju-channel` resolves to a snap revision newer than **3.6.26-14dcb65** (snap rev 35559), which contains the `/sbin` fix. If the pinned channel is older (for example `2.9/stable`), update it to a channel that provides the fixed revision, such as `3.6/stable` or newer.
 
 ## Part 8 — Documentation and integration test plans
 
@@ -331,11 +290,23 @@ Use a grep sweep to find any remaining references:
 grep -rn "24\.04\|ubuntu-24\.04\|ubuntu@24" --include="*.yaml" --include="*.yml" --include="*.md" --include="*.tf" --include="*.feature" --include="*.toml" --include="*.py" .
 ```
 
+### Multi-base charms — do not change 24.04 references that support the multi-base strategy
+
+If the user chose the **multi-base** approach for a subordinate charm (see "Decide: principal vs. subordinate" and Part 1), several `24.04` references are load-bearing and must be preserved. When sweeping the repo, DO NOT modify `24.04` references that exist to keep the 24.04 platform working alongside 26.04.
+
+- DO NOT remove or rewrite the `ubuntu@24.04` platform entry in `charmcraft.yaml`. Multi-base `charmcraft.yaml` files intentionally list both `ubuntu@24.04` and `ubuntu@26.04` under `platforms`; both entries must remain.
+- DO NOT change `24.04` references in multi-base command-runner logic (see Part 4), including `just` recipes, `conftest.py` base-selection branches, or any code that selects behavior conditionally on the base being `24.04`. Those branches exist to keep 24.04 working and must stay.
+- DO NOT update integration test plans, feature files, or pytest scenarios that intentionally exercise the `ubuntu@24.04` platform of a multi-base charm. Tests that cover both bases are expected to retain `24.04` references.
+- DO NOT rewrite `README.md` examples, Terraform variable descriptions, or documentation that documents the 24.04 platform of a multi-base charm. If a section describes both bases, keep both; only update sections that describe 24.04 as the sole target base.
+- DO NOT touch `pyproject.toml` `requires-python` bounds that were widened (not bumped) for the multi-base strategy — the widened range intentionally includes 3.12 to support 24.04.
+
+When in doubt about whether a `24.04` reference is multi-base support or a stale single-base remnant, ask the user before editing.
+
 ## Validation
 
 After applying all applicable parts:
 
-1. **Verify the juju snap and controller versions** (see Prerequisites). The juju snap must be at least as new as the current `3.6/edge` revision (3.6.26-14dcb65, snap rev 35559 as of 2026-07-16) to contain the `/sbin` fix, and every controller that will run 26.04 workloads must report a version newer than 3.6.25. If either check fails, ask the user whether to upgrade automatically or manually before proceeding. Without this, 26.04 integration tests that deploy Charmhub charms will fail with `the charm defined bases "ubuntu@26.04" not supported`, and snap-installing charms will hit the `/sbin` unlinking bug.
+1. **Verify the juju snap and controller versions** (see Prerequisites). The juju snap must be at least revision **3.6.26-14dcb65** (snap rev 35559) to contain the `/sbin` fix, and every controller that will run 26.04 workloads must report a version newer than 3.6.25. If either check fails, ask the user whether to upgrade automatically or manually before proceeding. Without this, 26.04 integration tests that deploy Charmhub charms will fail with `the charm defined bases "ubuntu@26.04" not supported`, and snap-installing charms will hit the `/sbin` unlinking bug.
 2. **Verify every charm uses the `uv` plugin** (see Part 3). If any charm uses the `charm` or `reactive` plugin, stop and ask the user how to proceed before continuing.
 3. Regenerate the lockfile (`uv lock`).
 4. Run unit tests if available.
