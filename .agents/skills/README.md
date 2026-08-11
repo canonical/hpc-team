@@ -31,6 +31,7 @@ A collection of agent skills for Charmed HPC development workflows.
 | [`create-charm-terraform-module`](create-charm-terraform-module/SKILL.md) | Create or review Terraform modules for individual Juju charms following the CC008 Charm Terraform Standards specification. Use when writing, validating, or restructuring a charm-level Terraform module that uses the Terraform Juju provider. |
 | [`create-charmed-hpc-justfile`](create-charmed-hpc-justfile/SKILL.md) | Create or review justfiles for Charmed HPC repositories following the UHPC011 Common justfile format specification. Use when writing, validating, or restructuring a justfile that must conform to the Charmed HPC standard. |
 | [`create-juju-integration-interface-readme`](create-interface-readme/SKILL.md) | Create README files for standalone Juju integration interface implementation packages and libraries. Use when writing, reviewing, or generating a README for an interface library package that implements a provider/requirer pattern for Juju charm relations. |
+| [`migrate-charm-to-26-04`](migrate-charm-to-26-04/SKILL.md) | Migrate a Juju charm (or monorepo of charms) from an Ubuntu 24.04 base to the Ubuntu 26.04 (Resolute) base. Use this when the user wants to upgrade a charm's charmcraft.yaml base, Python version, CI workflows, test dependencies, and documentation, and verify the juju snap/controller versions required for 26.04. |
 | [`jubilant-bdd-migration`](jubilant-bdd-migration/SKILL.md) | Migrate an existing Juju charm repo's pytest integration tests to Behavior-Driven Development (BDD) by authoring YAML test plans with gherkinator that generate Gherkin feature files backed by pytest-jubilant-bdd's reusable step handlers. Use when asked to "migrate tests to BDD", "convert to Gherkin", "use pytest-jubilant-bdd", or to Gherkin-ize jubilant-based integration tests in a charm repo (for example, slurm-charms, filesystem-charms, sssd-operator). Do NOT use for the pytest-jubilant-bdd plugin's own unit tests. |
 | [`setup-charm-monorepo`](setup-charm-monorepo/SKILL.md) | Set up a charm monorepo with a scripts/repository.py CLI tool and a UHPC011-compliant justfile. Use when scaffolding or reviewing a monorepo repository that uses uv workspaces, repository.py for tooling, and just as the developer entry point. |
 
@@ -75,6 +76,16 @@ Refer to [jubilant-bdd-migration/SKILL.md](jubilant-bdd-migration/SKILL.md) for 
 #### When to use
 
 Invoke this skill when asked to migrate, convert, Gherkin-ize, or move to BDD tests in a Juju charm repository. The target repo should have `tests/integration/*.py` using `jubilant` directly with no feature files, and contain charm markers (`charmcraft.yaml`, `metadata.yaml`, `src/charm.py`). Do not use this skill for the pytest-jubilant-bdd plugin's own unit tests, for fixing or extending existing BDD tests, or for repos that do not already use jubilant.
+
+### migrate-charm-to-26-04
+
+Apply this skill when the user asks to migrate a charm (or a monorepo of charms) to the Ubuntu 26.04 base, also known as "Resolute".
+
+Refer to [migrate-charm-to-26-04/SKILL.md](migrate-charm-to-26-04/SKILL.md) for the full migration steps covering the charmcraft base, Python version, CI workflows, test dependencies, and documentation.
+
+#### When to use
+
+Invoke this skill when the user wants to upgrade a charm's `charmcraft.yaml` base, Python version, CI workflows, test dependencies, and documentation to the Ubuntu 26.04 (Resolute) base, and to verify the juju snap/controller versions required for 26.04.
 
 ### setup-charm-monorepo
 
