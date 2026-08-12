@@ -53,7 +53,7 @@ jobs:
                   fi
                 done \
               | xargs -I{} dirname {} \
-              | xargs -I{} basename {} \  # Grab package name. E.g. `slurm-oci-runtime-interface`.
+              | xargs -I{} basename {} \
               | jq -R . | jq -sc .
           )
           echo "packages=${packages}" >> "$GITHUB_OUTPUT"
