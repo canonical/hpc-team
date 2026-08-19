@@ -18,7 +18,7 @@ The specification assumes the Terraform Juju provider version is pessimistically
 4. **Define inputs** — Add all mandatory input variables to `variables.tf` with the correct names, types, and defaults. Add optional inputs as needed. Entries must be in alphabetical order.
 5. **Define outputs** — Add all mandatory outputs to `outputs.tf`. Add `provides` and `requires` outputs if the charm defines those endpoints. Entries must be in alphabetical order.
 6. **Write main module code** — In `main.tf`, define the `juju_application` resource using the input variables. If the module is large, split into `applications.tf`, `integrations.tf`, `offers.tf`, etc.
-7. **Write provider and version blocks** — Ensure `providers.tf` contains the Juju provider block and `terraform.tf` contains a `terraform` block with `required_version` and `required_providers` (Juju provider ~> 1.0).
+7. **Write provider and version blocks** — Ensure `terraform.tf` contains a `terraform` block with `required_version` and `required_providers` (Juju provider ~> 1.0). Do **not** add a `provider "juju" {}` configuration block — the module inherits the provider configuration from the parent (calling) module, and declaring one would override it.
 8. **Document the module** — Write `README.md` following the structure defined in the README Structure section below. Use the `uuid` output of the `juju_model` model resource in the README's `Usage` section.
 9. **Validate** — Check that all mandatory inputs and outputs are present with correct names and types, and that files are in alphabetical order where required. Use `terraform fmt` and `terraform validate` to validate that the module is correct.
 
@@ -27,8 +27,7 @@ The specification assumes the Terraform Juju provider version is pessimistically
 Every charm module must provide these files:
 
 - `README.md` — Documentation. Must clarify inputs and outputs at minimum.
-- `providers.tf` — All provider blocks and configurations.
-- `terraform.tf` — A single `terraform` block defining `required_version` and `required_providers`. Minimum Juju provider version is >1.0.0.
+- `terraform.tf` — A single `terraform` block defining `required_version` and `required_providers`. Minimum Juju provider version is >1.0.0. Must not contain a `provider "juju" {}` configuration block, since that would override the provider configuration from the parent module.
 - `main.tf` — Main module code defining the `juju_application` resource. May be split into `applications.tf`, `integrations.tf`, `offers.tf`, etc. if the module is large.
 - `variables.tf` — Input variables, in alphabetical order.
 - `outputs.tf` — Outputs, in alphabetical order.
@@ -160,7 +159,7 @@ The following variables may be added to `variables.tf`. If present, they must us
 | `base` | `string` | `null` | Operating system (e.g. `ubuntu@22.04`) |
 | `endpoint_bindings` | Attribute Set | `{}` | Endpoint binding map |
 | `expose` | Block List | `{}` | Expose block per provider docs |
-| `machines` | `set(string)` | `[]` | List of `juju_machine` resources for deployment |
+| `machines` | `set(string)` | `null` | List of `juju_machine` resources for deployment. Mutually exclusive with `units` — the Juju provider throws if both are set |
 | `offered_endpoints` | `list(string)` | `[]` | Endpoints exposed as offers |
 | `resources` | `map(string)` | `{}` | Resources to use |
 | `storage_directives` | `map(string)` | `{}` | Storage map |
@@ -230,10 +229,12 @@ Tags and versions use `{major}.{minor}.{patch}` with no metadata, pre-release in
 ## Constraints
 
 - DO NOT include the `units` variable for subordinate charms.
+- DO NOT add a `provider "juju" {}` configuration block to the module. The provider configuration is inherited from the parent module; declaring one overrides it.
+- DO NOT set both `machines` and `units` on the `juju_application` resource — the Juju provider throws an error if both are set. Default `machines` to `null` so `units` takes effect when no machines are given.
 - DO NOT add metadata, pre-release info, or additional suffixes to version tags.
 - DO NOT create the `locals.tf` file if local, non-input variables are not required.
 - DO NOT use Latin words or phrases in documentation or descriptions. DO USE plain English.
 - DO ensure `variables.tf`, `outputs.tf`, and `locals.tf` entries are in alphabetical order.
 - DO ensure the minimum Juju provider version is ~> 1.0.
-- DO ensure every module includes the required file structure (`README.md`, `providers.tf`, `terraform.tf`, `main.tf`, `variables.tf`, `outputs.tf`, `locals.tf`).
+- DO ensure every module includes the required file structure (`README.md`, `terraform.tf`, `main.tf`, `variables.tf`, `outputs.tf`, `locals.tf`).
 - DO include `provides` and `requires` outputs when the charm defines those endpoints.
