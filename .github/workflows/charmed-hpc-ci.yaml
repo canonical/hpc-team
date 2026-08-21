@@ -23,6 +23,10 @@ on:
       run-test:
         type: boolean
         default: true
+      just-version:
+        description: Override the pinned just version
+        type: string
+        default: "1.48.1"
 
 jobs:
   inclusive-naming-check:
@@ -64,6 +68,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: canonical/hpc-team/.github/actions/setup-just@main
+        with:
+          just-version: ${{ inputs.just-version }}
       - if: inputs.setup-commands != ''
         run: ${{ inputs.setup-commands }}
       - run: just check
@@ -75,6 +81,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: canonical/hpc-team/.github/actions/setup-just@main
+        with:
+          just-version: ${{ inputs.just-version }}
       - if: inputs.setup-commands != ''
         run: ${{ inputs.setup-commands }}
       - run: just test
