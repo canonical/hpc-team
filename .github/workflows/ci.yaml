@@ -21,5 +21,6 @@ jobs:
   ci:
     uses: ./.github/workflows/charmed-hpc-ci.yaml
     with:
+      just-version: "1.58.0"
       run-test: false
       setup-commands: sudo snap install opentofu --classic --channel latest/stable
