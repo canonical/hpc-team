@@ -12,9 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# Necessary to use `||` logical operator.
 
-set unstable := true
+# Necessary to use `||` logical operator.
+set unstable
+set lists
 
 terraform_dir := justfile_dir() + "/terraform/"
 default_plan_list := shell("ls -d -- $1/*", terraform_dir)
