@@ -1,4 +1,4 @@
-# Copyright 2025 Canonical Ltd.
+# Copyright 2025-2026 Canonical Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,9 +34,7 @@ jobs:
       - name: Install `opentofu`
         run: sudo snap install opentofu --classic
       - name: Install `just`
-        uses: extractions/setup-just@v2
-        with:
-          just-version: 1.38.0
+        run: sudo snap install just --classic
       - name: Update organization labels
         run: |
           CHARMED_HPC_ORG_PAT="${{ secrets.LABELS_TOKEN }}" just apply labels
