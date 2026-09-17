@@ -20,7 +20,7 @@ on:
 
 jobs:
   scan:
-    runs-on: [self-hosted-linux-amd64-noble-xlarge]
+    runs-on: [self-hosted-linux-amd64-noble-private-endpoint-medium]
     strategy:
       fail-fast: false
       matrix:
