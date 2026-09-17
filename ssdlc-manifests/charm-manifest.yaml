@@ -8,44 +8,55 @@ clients:
 artifacts:
   - name: nfs-server-proxy
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: cephfs-server-proxy
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: filesystem-client
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: sackd
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: slurmctld
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: slurmd
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: slurmdbd
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: slurmrestd
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: apptainer
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: sssd
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
 
   - name: lustre-server
     channel: latest/edge
+    base: ubuntu@26.04
     type: charm
