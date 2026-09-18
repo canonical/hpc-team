@@ -46,10 +46,56 @@ structured YAML, validated against a strict schema, and transpiled into
   `scenarios("features/<name>.feature")`.
 - DO use `context.wait()` for polling in custom steps; drop
   `tenacity.Retrying`.
+- DO catch `Exception` (not just `AssertionError`) inside
+  `context.wait(ready=fn)` functions. `juju.exec()` and `juju.run()`
+  raise `jubilant.TaskError` on non-zero exit codes — these are transient
+  during node re-registration or service restarts. `tenacity.Retrying`
+  caught all exceptions by default; `context.wait()` only retries when
+  `ready` returns `False`, so any unhandled exception aborts the wait.
+- DO place all `@pytest.fixture` definitions and custom steps shared
+  across multiple `.feature` files in `conftest.py`. pytest-bdd only
+  resolves step definitions from the module where `scenarios()` is called
+  or from `conftest.py` — steps in one `test_*_bdd.py` are invisible to
+  other test modules. Likewise, pytest only discovers fixtures from
+  `conftest.py` and `test_*` modules, not from helper modules like
+  `bdd_utils.py`.
 - DO consult the `reusable-step-handler` skill in the pytest-jubilant-bdd
   repo for the canonical `Context` API when authoring custom steps.
 - DO keep the original non-BDD tests in place until the BDD suite is fully
   green.
+- DO distinguish the action-executing unit from the node-owning unit when
+  migrating tests that affect a different unit's state. In Slurm,
+  `set-node-state` runs on `slurmctld/0` (the controller) but modifies the
+  state of nodes registered to `slurmd/0` / `compute/0`. The `When` step
+  references the action unit (`controller/0`); the `Then` verification step
+  must reference the node-owner unit (`compute/0`), because custom steps like
+  `node_name(unit)` derive the Slurm node name from the unit in the step
+  text. Using the action unit in the `Then` step silently queries the wrong
+  node — `context.wait()` catches the exception and polls until timeout.
+<!-- TODO(OO002): re-enable once test-plan-type interop is fleshed out.
+     Requiring each scenario to be self-contained may lead to gigantic
+     scenarios, and the interaction with `Background` blocks and duplicated
+     `Given I deploy` steps needs investigation. See PR #52 review.
+- DO make each scenario **and feature** self-contained. Re-establish
+  starting state via explicit `Given` steps; never rely on a sibling
+  scenario's or another feature's side effects. BDD scenarios can be
+  filtered (`-k`), reordered, or run in isolation. If a scenario can't
+  be decoupled, propose a combined scenario to the user.
+-->
+- DO snapshot role→unit mappings into `scenario_state` *before* actions
+  that shift which unit holds a role (primary/backup, leader/follower). A
+  `Given I record the current role assignments` step captures the mapping;
+  subsequent `When`/`Then` steps read from the snapshot so they target the
+  same physical unit even after failover begins. See [examples.md](examples.md).
+- DO register state-checking handlers under **both** `@given` and `@then`
+  when the same check is both precondition and attestation. Never stack
+  `@when` with either.
+- DO qualify ambiguous nouns in custom step phrasing (`controller`, `node`,
+  `job`). Step definitions are global; terse nouns collide across features.
+- DO treat command-running *preparation* as `Given`, not `When`. A step
+  that runs a command only to prepare state (create pools, register a
+  client, set up a mock device) is `Given`. Reserve `When` for the action
+  under test.
 
 ## DO NOTs
 
@@ -60,6 +106,9 @@ structured YAML, validated against a strict schema, and transpiled into
   not part of the public API.
 - DO NOT define a `juju` fixture in `conftest.py` — the plugin provides
   `context`.
+- DO NOT place `@pytest.fixture` definitions in helper modules like
+  `bdd_utils.py`. Fixtures must live in `conftest.py` (or a `test_*`
+  module). Helper modules are for plain functions only.
 - DO NOT invent `type`, `status`, or `risk` values outside the enums
   enforced by `gherkinator validate`.
 - DO NOT modify production charm code in the target repo to make a test
@@ -94,9 +143,7 @@ The full `Context` API — `context.get_juju()`, `context.get_app()` /
 `context.wait()` polling semantics, and the `assertions.app` / `.model` /
 `.unit` namespaces — is documented authoritatively in the
 **`reusable-step-handler`** skill in the pytest-jubilant-bdd repo:
-
-- Repo path: `.agents/skills/reusable-step-handler/SKILL.md`
-- Web: https://github.com/canonical/pytest-jubilant-bdd/blob/main/.agents/skills/reusable-step-handler/SKILL.md
+`.agents/skills/reusable-step-handler/SKILL.md`.
 
 That skill is the source of truth for the `context` fixture and for how
 reusable handlers integrate with it. Consult it whenever you need the exact
@@ -115,7 +162,8 @@ parser).
 
 | Step phrasing | Handler | Notes |
 |---|---|---|
-| `Given I add model '{model}'` | `add_model` | Creates a model with a random suffix. |
+| `Given I add model '{model}'` | `add_model` | Creates a model with a random suffix. Does **not** switch the active model — follow with `Given I switch to model '{model}'` if subsequent steps don't use `in model '{model}'` clauses. |
+| `Given I switch to model '{model}'` | `switch_model` | Switches the context's default model. Use after `add_model` when subsequent steps omit `in model`. |
 | `Given I add '{n}' units to app '{app}' [in model '{model}']` | `add_unit` | `unit`/`units` both accepted. |
 | `Given I deploy '{app}' [in model '{model}'] [from channel '{channel}'] [on base '{base}'] [with '{n}' units]` | `deploy` | Charmhub deploy. |
 | `Given I deploy '{app}' from a local charm [located at '{path}'] [in model '{model}'] [on base '{base}'] [with '{n}' units]` | `deploy_local` | If `located at` omitted, reads `<APP>_CHARM_PATH` env var. |
@@ -130,7 +178,7 @@ parser).
 
 | Step phrasing | Handler | Notes |
 |---|---|---|
-| `When I run action '{action}' on unit '{u}' [with parameters '{k=v ...}'] [in model '{model}']` | `run_action` | `unit`/`units` accepted; multiple targets as `'a/0', 'a/1', and 'a/2'`; params like `'debug=true key=val'`. Results pushed to `context.action_results`. |
+| `When I run action '{action}' on unit '{u}' [with parameters '{k=v ...}'] [in model '{model}']` | `run_action` | `unit`/`units` accepted; multiple targets as `'a/0', 'a/1', and 'a/2'`; params like `'debug=true key=val'`. Results pushed to `context.action_results`. Parameters are parsed by `ast.literal_eval`, which cannot parse lowercase `true`/`false` (JSON/Shell style). For boolean action params, write a custom step that passes `params={"key": True}` directly to `juju.run()`. |
 | `When I execute '{command}' on machine '{m}' [in model '{model}']` | `run_exec` | `machine`/`machines` and `unit`/`units` accepted. Results pushed to `context.exec_results`. |
 
 **Then (attestation):**
@@ -216,15 +264,60 @@ row, or as `Scenario Outline: <title>` with `Examples:` when it does.
    use `jubilant` directly. Reference the pattern-mapping table in
    [reference.md](reference.md).
 
-2. **Map each test to a scenario.** For every `def test_*(...)`:
+2. **Map each test to a scenario.** This is the core migration step. For
+   every `def test_*(...)`, work through the following:
+
+   **Basic translation:**
    - Setup (deploys, models, config, integrations) → **Given** steps.
    - Actions (`juju.run`, `juju.exec`, config changes) → **When** steps.
    - Assertions (status, messages, command output, action results) →
      **Then** steps.
-   - Note any test that does NOT map to a built-in step — that becomes a
-     custom step.
    - Group tests into logical features (one `.feature` file per group:
      deployment, integration, operations, actions).
+
+   **Decisions that require judgment:**
+
+    - **Shared setup across tests.** If multiple tests repeat the same
+      deploy + integrate sequence, extract it into the feature's
+      `background` block rather than duplicating it in every scenario. The
+      background runs before every scenario in that feature.
+    - **Chained legacy tests.** Lift each scenario's required starting
+      state into `Given` preconditions (see the self-contained DO); if
+      it can't be decoupled, propose a combined scenario.
+   - **`juju.wait()` calls.** These are assertions, not setup. Map them to
+     `Then the workload status for app '...' is 'active'` — do not put
+     `juju.wait()` inside a Given/deploy step, because a charm can't reach
+     `active` before its integrations exist.
+   - **Polling / retry loops (`tenacity.Retrying`, `@retry`, `sleep`).**
+     Drop them entirely. Map the assertion inside the loop to a `Then`
+     step; built-in `Then` steps already poll via `context.wait()`, and
+     custom `Then` steps should call `context.wait(ready=...)`.
+    - **Tests that check a side effect on a different unit.** The `When`
+      uses the action unit; the `Then` uses the node-owner unit — see the
+      DO above and the walkthrough in [examples.md](examples.md).
+   - **Multi-assertion tests.** A single legacy test with multiple
+     `assert` statements may map to multiple `Then` steps in one scenario,
+     or to multiple scenarios if the assertions test different preconditions.
+     Split by concern — don't force unrelated assertions into one scenario.
+   - **Tests with parametrized data (`@pytest.mark.parametrize`).** Map to
+     a `Scenario Outline` with an `Examples:` table. Use `<param>` tokens
+     in the scenario steps.
+   - **Tests that don't map to any built-in step.** Note these — each
+     becomes a custom step defined in the feature's `test_*.py` module (or
+     `conftest.py` if shared across features). Common candidates: running
+     `scontrol` commands, checking Slurm node state, verifying munge key
+     content, SMTP capture.
+   - **Test ordering (`@pytest.mark.order`).** Not migrated to YAML. Apply
+     the marker to the scenario-loading module (`scenarios(...)` line) if
+     cross-file ordering matters. Note that `pytest-order` is not universally
+     used across the charming ecosystem — only apply it if the target repo
+     already depends on it; otherwise omit and rely on intra-feature
+     top-to-bottom ordering.
+
+   Reference the pattern-mapping table in [reference.md](reference.md)
+   for the jubilant→BDD translation of each API call, and the migration
+   fidelity checklist in [reference.md](reference.md) for semantic
+   equivalence checks (assertions, side effects, polling, markers).
 
 3. **Initialize gherkinator.** Run from the repo root:
 
@@ -278,22 +371,37 @@ row, or as `Scenario Outline: <title>` with `Examples:` when it does.
 
 6. **Write custom step definitions** (only for domain logic with no
    built-in equivalent) in `tests/integration/test_<feature>.py`. Each
-   module loads its scenarios with `scenarios("features/<name>.feature")`
-   and defines any custom steps the framework doesn't already provide. Use
-   the `context` fixture and `context.wait()` for polling. Templates are in
-   [examples.md](examples.md).
+   module loads its scenarios with `scenarios("features/<name>.feature")`.
+   Use the `context` fixture and `context.wait()` for polling. Templates
+   are in [examples.md](examples.md).
 
 7. **Configure the repo.** Add `pytest-jubilant-bdd` to the integration
-   test dependencies. Do **not** redefine a `juju` fixture — the plugin
-   provides `context`. Do **not** import step handlers. See
-   [reference.md](reference.md) for `pyproject.toml` and `conftest.py`
-   snippets.
+   test dependencies. See [reference.md](reference.md) for
+   `pyproject.toml` and `conftest.py` snippets.
 
 8. **Run the BDD suite** and confirm scenarios pass:
 
    ```bash
-   just integration
+   # Run via the repo's task runner. Examples:
+   just integration          # just
+   make integration          # make
+   tox -e integration        # tox
+   # or, if the repo only has a `test` dispatcher:
+   just test integration
    ```
+
+   Charm repositories standardize on a task runner (`just`, `make`, or
+   `tox`) as the single entrypoint for everything — recipes embed
+   preparatory steps like package installation, charm builds, and
+   dependency resolution. Inspect the repo's task runner first to find
+   the exact recipe name and any prerequisites it expects:
+
+   - `just`: read the `justfile` (`just --list`, `just --show <recipe>`).
+   - `make`: read the `Makefile` (`make help` if available).
+   - `tox`: read `tox.ini` / `pyproject.toml [tool.tox]` (`tox -av`).
+
+   Run the recipe, not `pytest` directly. If the repo has no task runner,
+   fall back to `pytest tests/integration/ -v` and note the gap.
 
    Fix-and-rerun until green. After the suite is green for a given plan,
    flip the corresponding YAML `status` field from `planned` to
