@@ -68,7 +68,7 @@ variable "label" {
     },
     {
       name        = "feature request"
-      color       = "25d611"
+      color       = "42daf5"
       description = "This issue contains a feature request"
     },
     {
