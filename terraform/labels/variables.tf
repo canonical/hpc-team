@@ -67,6 +67,11 @@ variable "label" {
       description = "This pull request adds a new feature to the project"
     },
     {
+      name        = "feature request"
+      color       = "25d611"
+      description = "This issue contains a feature request"
+    },
+    {
       name        = "fix"
       color       = "ca299e"
       description = "This pull request fixes a confirmed issue"
