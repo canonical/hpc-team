@@ -22,6 +22,11 @@ variable "label" {
       description = "Add this label on a PR to backport its commits to our list of maintained branches"
     },
     {
+      name        = "batcave"
+      color       = "fd6fba"
+      description = "Author or reviewer(s) have requested a virtual call to discuss/resolve this issue or pull request"
+    },
+    {
       name        = "blocked"
       color       = "57006f"
       description = "A dependency must be resolved before this is actionable"
