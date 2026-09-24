@@ -22,7 +22,7 @@ variable "label" {
       description = "Add this label on a PR to backport its commits to our list of maintained branches"
     },
     {
-      name        = "batcave"
+      name        = "resolved-offline"
       color       = "fd6fba"
       description = "Author or reviewer(s) have requested a virtual call to discuss/resolve this issue or pull request"
     },
