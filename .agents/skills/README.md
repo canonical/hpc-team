@@ -34,6 +34,7 @@ A collection of agent skills for Charmed HPC development workflows.
 | [`migrate-charm-to-26-04`](migrate-charm-to-26-04/SKILL.md) | Migrate a Juju charm (or monorepo of charms) from an Ubuntu 24.04 base to the Ubuntu 26.04 (Resolute) base. Use this when the user wants to upgrade a charm's charmcraft.yaml base, Python version, CI workflows, test dependencies, and documentation, and verify the juju snap/controller versions required for 26.04. |
 | [`jubilant-bdd-migration`](jubilant-bdd-migration/SKILL.md) | Migrate an existing Juju charm repo's pytest integration tests to Behavior-Driven Development (BDD) by authoring YAML test plans with gherkinator that generate Gherkin feature files backed by pytest-jubilant-bdd's reusable step handlers. Use when asked to "migrate tests to BDD", "convert to Gherkin", "use pytest-jubilant-bdd", or to Gherkin-ize jubilant-based integration tests in a charm repo (for example, slurm-charms, filesystem-charms, sssd-operator). Do NOT use for the pytest-jubilant-bdd plugin's own unit tests. |
 | [`setup-charm-monorepo`](setup-charm-monorepo/SKILL.md) | Set up a charm monorepo with a scripts/repository.py CLI tool and a UHPC011-compliant justfile. Use when scaffolding or reviewing a monorepo repository that uses uv workspaces, repository.py for tooling, and just as the developer entry point. |
+| [`write-charm-unit-tests`](write-charm-unit-tests/SKILL.md) | Write regression-focused unit tests for Juju charms (ops / ops.testing) that pin real failure modes instead of chasing coverage, with mutation-based verification of test rigor. Use when asked to improve a charm's unit test coverage, add meaningful unit tests, or audit whether existing tests would catch regressions. |
 
 ---
 
@@ -96,3 +97,13 @@ Refer to [setup-charm-monorepo/SKILL.md](setup-charm-monorepo/SKILL.md) for the 
 #### When to use
 
 Invoke this skill when scaffolding or reviewing a monorepo repository that uses uv workspaces, `repository.py` for tooling, and `just` as the developer entry point. Provide a path to the repository root directory, or leave blank to use the current directory.
+
+### write-charm-unit-tests
+
+Writes unit tests for Juju charms that pin real failure modes rather than chasing a coverage number. The workflow drives behavior through `ops.testing` with real events, then verifies each test's rigor by mutating the source and confirming the test fails.
+
+Refer to [write-charm-unit-tests/SKILL.md](write-charm-unit-tests/SKILL.md) for the five-phase workflow and test-writing rules, and [write-charm-unit-tests/reference.md](write-charm-unit-tests/reference.md) for coverage commands and an `ops.testing` quick reference.
+
+#### When to use
+
+Invoke this skill when asked to improve a charm's unit test coverage, add meaningful unit tests, or audit whether existing tests would catch regressions. Provide a path to a charm directory, or leave blank to review the current directory.
