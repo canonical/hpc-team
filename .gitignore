@@ -3,3 +3,7 @@
 .terraform
 .terraform.lock.hcl
 *.tfstate*
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
