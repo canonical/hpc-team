@@ -42,7 +42,7 @@ permissions:
   contents: read
 
 jobs:
-  tics:
+  tics-scan:
     runs-on: ${{ inputs.runner }}
     concurrency:
       group: tics-${{ github.repository }}
