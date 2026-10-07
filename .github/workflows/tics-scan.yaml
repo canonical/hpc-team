@@ -1,0 +1,82 @@
+# Copyright 2026 Canonical Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: TICS scan
+description: Run the TIOBE TICS scanner on the repository and upload results
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: TICS project name
+        required: true
+        type: string
+      test-command:
+        description: Command that builds the project and runs coverage tests
+        required: false
+        type: string
+        default: just unit
+      runner:
+        description: GitHub Actions runner image
+        required: false
+        type: string
+        default: ubuntu-26.04
+      uv-version:
+        description: Version of uv to install
+        required: false
+        type: string
+        default: 0.12.x
+
+permissions:
+  contents: read
+
+jobs:
+  tics-scan:
+    runs-on: ${{ inputs.runner }}
+    concurrency:
+      group: tics-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Just
+        run: sudo snap install just --classic --channel latest/stable
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ inputs.uv-version }}
+
+      - name: Install Charmcraft
+        run: sudo snap install charmcraft --classic --channel 4.x/stable
+
+      - name: Run coverage tests
+        run: ${{ inputs.test-command }}
+
+      - name: Activate tests .venv
+        run: |
+          . .venv/bin/activate
+          echo PATH=$PATH >> $GITHUB_ENV
+
+      - name: TICS GitHub Action
+        uses: tiobe/tics-github-action@v4
+        with:
+          mode: qserver
+          project: ${{ inputs.project }}
+          viewerUrl: https://canonical.tiobe.com/tiobeweb/TICS/api/cfg?name=default
+          branchdir: ${{ env.GITHUB_WORKSPACE }}
+          ticsAuthToken: ${{ secrets.TICSAUTHTOKEN }}
+          installTics: true
+          calc: ALL
