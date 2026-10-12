@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: TICS scan
+name: TiCS scan
 description: Run the TIOBE TICS scanner on the repository and upload results
 
 on:
@@ -51,7 +51,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Just
+      - name: Install `just`
         run: sudo snap install just --classic --channel latest/stable
 
       - name: Install uv
@@ -59,7 +59,7 @@ jobs:
         with:
           version: ${{ inputs.uv-version }}
 
-      - name: Install Charmcraft
+      - name: Install `charmcraft`
         run: sudo snap install charmcraft --classic --channel 4.x/stable
 
       - name: Run coverage tests
