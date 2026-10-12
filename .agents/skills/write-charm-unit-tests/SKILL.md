@@ -59,11 +59,21 @@ need a specific invocation or API detail; the rules below are the part to intern
   call it; if you find the same two or three `mocker.patch.object` calls repeated
   across tests, hoist them into `conftest.py` as a plain function taking
   `(manager, mocker)`. This is the highest-value cleanup available in a charm suite.
+  Tests must consume a conftest helper through a fixture that returns it, or define
+  it in the test module beside the other builders — never `from conftest import ...`:
+  pytest's docs advise against importing from conftest (path ambiguity between
+  conftest roots), and reviewers flag it. Because the helper's `manager` argument
+  only exists inside the `with mock_charm(...)` block, defining it in the test
+  module is the usual answer.
 - Before adding a shared fixture or helper to `conftest.py`, grep the test modules for
   an identical local fixture — keep exactly one definition, since duplicates drift.
   Fixture names, `scope=`/`ids=`, and centralized boundary patches (`shutil.chown`,
   `subprocess.run`) should match what sibling test modules already use. Check
-  docstrings too: copy-pasted conftests routinely name the wrong charm.
+  docstrings too: copy-pasted conftests routinely name the wrong charm. Only add a
+  fixture at least one test actually requests: after writing, grep that every new
+  fixture name appears in a test signature — a speculative "might need later"
+  fixture (e.g. a `succeed` parametrize helper copied from a sibling suite) is dead
+  code reviewers will catch.
 - **Prefer the public API over vendored internals.** Use `testing.Manager` and
   `testing.errors.UncaughtCharmError`, not `from scenario import Manager` or
   `from scenario.errors import ...` — those reach into `ops.testing`'s bundled
@@ -114,7 +124,10 @@ while the code is broken.
    untouched while expected side effects still happen.
 9. **Pair absence assertions with a positive one.** "Non-leader does not write the
    config file" passes vacuously if a gate blocked the handler entirely; also assert
-   something the handler must do to prove execution reached the body.
+   something the handler must do to prove execution reached the body. An absence
+   assertion earns its keep when a plausible mutation would flip it (e.g.
+   `restart()` → `reload()` flips `reload.assert_not_called()`) — even if the
+   current handler never calls the method.
 10. **Name the failure mode in the docstring.** State the production breakage the test
     guards against. A test whose author cannot name its failure mode is coverage
     padding; delete it.
@@ -144,7 +157,10 @@ while the code is broken.
 16. **Check what lies outside the `try` block.** Handlers often guard parsing and
     file-writing but leave the service restart unguarded on the last line — the new
     state is already on disk, so a failure there leaves the unit in Juju `error` with
-    no defer and no retry. Read handlers to the final line.
+    no defer and no retry. Read handlers to the final line. When testing a failure
+    path, also assert what the handler durably accomplished before failing — the
+    files written before the failing call are the state the deferred retry depends
+    on.
 17. **Give equivalent behaviors an equivalent shape.** If the status surface is tested
     elsewhere as one `test_update_status` parametrized over
     `(installed, joined, active, expected)`, do not hand-roll one test per status.
@@ -152,6 +168,19 @@ while the code is broken.
 18. **When adding a test to a parametrized class, honor its parameters.** Dropping a
     test into a `leader`-parametrized class without adding the `leader` parameter and
     branching its assertions silently stops covering the non-leader path.
+19. **Keep the test body linear — no branching on the parametrized input.** When all
+    cases share an assertion shape, move expectations into the parametrize table,
+    with exact values (`len(state.deferred) == 1`, never `> 0` — a range hides
+    double-defer regressions). When shapes diverge (one case asserts file contents,
+    the other asserts nothing was written), split into separately named tests
+    (`test_on_install_success` / `test_on_install_failure`) that each also assert
+    the negative (`assert_not_called`) so the guard and short-circuit are pinned.
+    Precedent: `slurmctld`'s `test_on_smtp_relation_*_{success,failure}` pairs.
+20. **Back every behavioral claim in the docstring with an assertion.** "Must not
+    write a malformed key file" needs a file-content assertion that fails when the
+    claim is violated; otherwise the failure mode is narrative, not pinned.
+    Corollary: prune arrange steps the exercised path never reaches — a mock for a
+    call that cannot happen is noise.
 
 ## Phase 4: Mutation-verify every test (the scrutiny step)
 
@@ -212,5 +241,7 @@ When reviewing coverage-focused test additions (yours or another agent's):
    absence assertions are vacuous if a gate blocked execution.
 3. Coverage-padding tells: assertions on self-built mocks, tests of library or
    framework behavior, docstrings that cannot name a failure mode, fixtures
-   duplicating existing ones.
+   duplicating existing ones, test bodies that branch on the parametrized input,
+   fixtures defined but never requested, docstring claims without matching
+   assertions, and count assertions looser than exact (`> 0` where `== 1` holds).
 4. Flag the weakest tests so the user can judge whether they earn their place.
