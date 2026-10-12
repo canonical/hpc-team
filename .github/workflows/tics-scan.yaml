@@ -26,7 +26,7 @@ on:
         description: Command that builds the project and runs coverage tests
         required: false
         type: string
-        default: just unit
+        default: just test unit
       runner:
         description: GitHub Actions runner image
         required: false
