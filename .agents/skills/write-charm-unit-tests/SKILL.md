@@ -19,6 +19,24 @@ skill", near the end, reuses the same judgment for review.
 mutation harness constraints, and an `ops.testing` quick reference. Read it when you
 need a specific invocation or API detail; the rules below are the part to internalize.
 
+## What counts as a unit test here
+
+Unit tests are the bulk of the suite (~80%) and must stay fast and deterministic:
+single-threaded, no sleeps, no IO except hermetic in-memory fakes, no blocking calls
+(e.g. network). If a test needs a real model, a real service, or localhost networking,
+it is an integration test — do not force it into the unit suite.
+
+Each test must be hermetic: self-contained (everything needed to set up, execute, and
+tear down is in the test or its fixtures), concise (nothing the exercised behavior
+doesn't need), and independent of execution order or other tests' leftover state.
+
+Split {ops,juju}-independent logic (config builders, validators, parsing) from
+{ops,juju}-dependent logic (event handlers, pebble ops, relation data r/w). Test the
+independent parts directly as plain function calls — no harness — and reserve
+`ops.testing` for the dependent parts. If code is hard to test, it usually has too
+many responsibilities or unmanageable dependencies; say so in the report instead of
+writing a tortured test around it.
+
 ## Phase 1: Map coverage gaps to behavior, not line counts
 
 1. Run the suite under branch coverage and get the missing-lines report — in
@@ -64,7 +82,10 @@ need a specific invocation or API detail; the rules below are the part to intern
   pytest's docs advise against importing from conftest (path ambiguity between
   conftest roots), and reviewers flag it. Because the helper's `manager` argument
   only exists inside the `with mock_charm(...)` block, defining it in the test
-  module is the usual answer.
+  module is the usual answer. DAMP (descriptive and meaningful phrases) beats DRY
+  (don't repeat yourself) in tests: hoist only what repeats *and* reads better
+  hoisted — some duplication inside a test body is fine when it keeps cause and
+  effect visible to whoever debugs the failure.
 - Before adding a shared fixture or helper to `conftest.py`, grep the test modules for
   an identical local fixture — keep exactly one definition, since duplicates drift.
   Fixture names, `scope=`/`ids=`, and centralized boundary patches (`shutil.chown`,
