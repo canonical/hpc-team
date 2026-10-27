@@ -165,6 +165,11 @@ variable "label" {
       name        = "Charmed Slurm 25.11"
       color       = "ccedc7"
       description = "The resolution for this issue will be included in Charmed Slurm 25.11"
+    },
+    {
+      name        = "synced-to-jira"
+      color       = "cbafff"
+      description = "This issue has been synced to Jira"
     }
   ]
 }
