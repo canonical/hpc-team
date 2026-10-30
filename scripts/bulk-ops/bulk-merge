@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Copyright 2026 Canonical Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Merge (and optionally approve) the pull requests opened by bulk-push across
+# a set of repositories.
+#
+# Usage:
+#   bulk-merge -s <set> -b <branch> [options]
+#
+# Options:
+#   -s, --set <name|path>   Repository set name from repos/ (e.g. "charms",
+#                           "all") or a path to a file listing repositories.
+#   -b, --branch <name>     Head branch of the pull requests to merge.
+#   -m, --method <method>   Merge method: squash (default), merge, or rebase.
+#       --approve           Approve each pull request before merging. Only use
+#                           this if scripted approval complies with the
+#                           repository's branch protection and review policy.
+#       --auto              Enable auto-merge so each pull request merges only
+#                           after its required checks pass. Recommended.
+#       --delete-branch     Delete each head branch after merging.
+#   -n, --dry-run           Show what would be merged without changing anything.
+#   -h, --help              Show this help text.
+#
+# Repositories without an open pull request for the branch are skipped.
+#
+# Example:
+#   bulk-merge -s charms -b chore/sync-contributing --auto
+
+set -euo pipefail
+
+SETS="$(cd "$(dirname "${BASH_SOURCE[0]}")/repos" && pwd)"
+
+SET=""
+BRANCH=""
+METHOD="squash"
+APPROVE=0
+AUTO=0
+DELETE_BRANCH=0
+DRY_RUN=0
+
+usage() {
+	sed -n '/^# Merge (and/,/^[^#]/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//' | head -n -1
+}
+
+die() {
+	echo "bulk-merge: error: $*" >&2
+	exit 1
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-s | --set)
+		SET="$2"
+		shift 2
+		;;
+	-b | --branch)
+		BRANCH="$2"
+		shift 2
+		;;
+	-m | --method)
+		METHOD="$2"
+		shift 2
+		;;
+	--approve)
+		APPROVE=1
+		shift
+		;;
+	--auto)
+		AUTO=1
+		shift
+		;;
+	--delete-branch)
+		DELETE_BRANCH=1
+		shift
+		;;
+	-n | --dry-run)
+		DRY_RUN=1
+		shift
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	*)
+		die "unknown option '$1' (see --help)"
+		;;
+	esac
+done
+
+[ -n "$SET" ] || die "missing required option --set"
+[ -n "$BRANCH" ] || die "missing required option --branch"
+case "$METHOD" in
+squash | merge | rebase) ;;
+*) die "invalid merge method '$METHOD'" ;;
+esac
+
+if [ -f "$SET" ]; then
+	SET_FILE="$SET"
+elif [ -f "$SETS/$SET" ]; then
+	SET_FILE="$SETS/$SET"
+else
+	die "unknown repository set '$SET' (looked in $SETS/)"
+fi
+
+mapfile -t REPOS < <(grep -vE '^\s*(#|$)' "$SET_FILE")
+[ ${#REPOS[@]} -gt 0 ] || die "repository set '$SET' is empty"
+
+command -v gh >/dev/null || die "the GitHub CLI (gh) is required"
+gh auth status >/dev/null 2>&1 || die "not logged in to the GitHub CLI (run 'gh auth login')"
+
+MERGED=()
+SKIPPED=()
+FAILED=()
+
+for repo in "${REPOS[@]}"; do
+	echo "==> $repo"
+
+	pr="$(gh pr list --repo "$repo" --head "$BRANCH" --state open \
+		--json number,url,mergeStateStatus \
+		--jq '.[] | "\(.number) \(.url) \(.mergeStateStatus // "unknown")"')"
+	if [ -z "$pr" ]; then
+		echo "    no open pull request for branch '$BRANCH', skipping"
+		SKIPPED+=("$repo")
+		continue
+	fi
+
+	number="$(echo "$pr" | cut -d' ' -f1)"
+	url="$(echo "$pr" | cut -d' ' -f2)"
+	state="$(echo "$pr" | cut -d' ' -f3)"
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		echo "    would merge $url (merge state: $state)"
+		MERGED+=("$repo")
+		continue
+	fi
+
+	if [ "$APPROVE" -eq 1 ]; then
+		gh pr review --repo "$repo" "$number" --approve ||
+			echo "    warning: could not approve (already approved, or own pull request?)" >&2
+	fi
+
+	merge_args=(--repo "$repo" "$number" "--$METHOD")
+	[ "$AUTO" -eq 1 ] && merge_args+=(--auto)
+	[ "$DELETE_BRANCH" -eq 1 ] && merge_args+=(--delete-branch)
+
+	if gh pr merge "${merge_args[@]}"; then
+		echo "    merged $url"
+		MERGED+=("$repo")
+	else
+		echo "    failed to merge $url (merge state: $state)" >&2
+		FAILED+=("$repo")
+	fi
+done
+
+echo
+echo "Summary for set '$SET':"
+echo "  merged:  ${#MERGED[@]}${MERGED:+ $(printf '%s ' "${MERGED[@]}")}"
+echo "  skipped: ${#SKIPPED[@]}${SKIPPED:+ $(printf '%s ' "${SKIPPED[@]}")}"
+echo "  failed:  ${#FAILED[@]}${FAILED:+ $(printf '%s ' "${FAILED[@]}")}"
+
+[ ${#FAILED[@]} -eq 0 ]

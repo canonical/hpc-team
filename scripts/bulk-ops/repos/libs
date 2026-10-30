@@ -1,0 +1,3 @@
+# Library and support package repositories maintained directly as part of Charmed HPC.
+canonical/slurmutils
+canonical/charmed-hpc-libs

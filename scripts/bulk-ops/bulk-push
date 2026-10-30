@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# Copyright 2026 Canonical Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Apply a change across a set of repositories, then push a branch and open
+# (or update) a pull request on each repository.
+#
+# Usage:
+#   bulk-push -s <set> -b <branch> -m <message> [options] -- <command> [args...]
+#
+# Options:
+#   -s, --set <name|path>   Repository set name from repos/ (e.g. "charms",
+#                           "all") or a path to a file listing repositories.
+#   -b, --branch <name>     Branch to create and push on each repository.
+#   -m, --message <msg>     Commit message. Also used as the default PR title.
+#   -t, --title <title>     PR title. Defaults to the commit message.
+#       --body <body>       PR body.
+#       --reviewers <list>  Comma-separated GitHub users/teams to request
+#                           review from on each new PR.
+#       --draft             Open pull requests as drafts.
+#   -i, --interactive       If the command fails on a repository, open a shell
+#                           in the clone to resolve the issue manually - e.g.
+#                           re-run a failed patch with 'git apply --3way', fix
+#                           the conflicts in an editor, and 'git add' the
+#                           resolved files - then exit the shell to continue
+#                           with the resolved changes. Exit with no changes to
+#                           mark the repository as failed.
+#   -n, --dry-run           Clone and run the command, show the resulting diff
+#                           for each repository, but do not commit or push.
+#   -h, --help              Show this help text.
+#
+# The command after `--` runs at the root of each cloned repository with the
+# REPO (owner/name) and REPO_DIR environment variables set. Repositories where
+# the command produces no changes are skipped. Re-running with the same branch
+# name force-pushes and updates the existing pull request rather than opening
+# a duplicate.
+#
+# Example:
+#   bulk-push -s charms -b chore/sync-contributing \
+#     -m "chore: sync CONTRIBUTING.md from hpc-team" \
+#     -- cp "$HOME/hpc-team/CONTRIBUTING.md" CONTRIBUTING.md
+
+set -euo pipefail
+
+SETS="$(cd "$(dirname "${BASH_SOURCE[0]}")/repos" && pwd)"
+
+SET=""
+BRANCH=""
+MESSAGE=""
+TITLE=""
+BODY=""
+REVIEWERS=""
+DRAFT=0
+INTERACTIVE=0
+DRY_RUN=0
+
+usage() {
+	sed -n '/^# Apply a change/,/^[^#]/p' "${BASH_SOURCE[0]}" | sed 's/^# \?//' | head -n -1
+}
+
+die() {
+	echo "bulk-push: error: $*" >&2
+	exit 1
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-s | --set)
+		SET="$2"
+		shift 2
+		;;
+	-b | --branch)
+		BRANCH="$2"
+		shift 2
+		;;
+	-m | --message)
+		MESSAGE="$2"
+		shift 2
+		;;
+	-t | --title)
+		TITLE="$2"
+		shift 2
+		;;
+	--body)
+		BODY="$2"
+		shift 2
+		;;
+	--reviewers)
+		REVIEWERS="$2"
+		shift 2
+		;;
+	--draft)
+		DRAFT=1
+		shift
+		;;
+	-i | --interactive)
+		INTERACTIVE=1
+		shift
+		;;
+	-n | --dry-run)
+		DRY_RUN=1
+		shift
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		break
+		;;
+	*)
+		die "unknown option '$1' (see --help)"
+		;;
+	esac
+done
+
+[ -n "$SET" ] || die "missing required option --set"
+[ -n "$BRANCH" ] || die "missing required option --branch"
+[ -n "$MESSAGE" ] || die "missing required option --message"
+[ $# -gt 0 ] || die "missing command after '--'"
+
+TITLE="${TITLE:-$MESSAGE}"
+
+if [ -f "$SET" ]; then
+	SET_FILE="$SET"
+elif [ -f "$SETS/$SET" ]; then
+	SET_FILE="$SETS/$SET"
+else
+	die "unknown repository set '$SET' (looked in $SETS/)"
+fi
+
+mapfile -t REPOS < <(grep -vE '^\s*(#|$)' "$SET_FILE")
+[ ${#REPOS[@]} -gt 0 ] || die "repository set '$SET' is empty"
+
+command -v gh >/dev/null || die "the GitHub CLI (gh) is required"
+gh auth status >/dev/null 2>&1 || die "not logged in to the GitHub CLI (run 'gh auth login')"
+
+PUSHED=()
+SKIPPED=()
+FAILED=()
+
+for repo in "${REPOS[@]}"; do
+	echo "==> $repo"
+	workdir="$(mktemp -d)"
+	trap 'rm -rf "$workdir"' EXIT
+
+	if ! gh repo clone "$repo" "$workdir" -- --depth 1 --quiet; then
+		echo "    failed to clone" >&2
+		FAILED+=("$repo")
+		rm -rf "$workdir"
+		continue
+	fi
+
+	if ! (cd "$workdir" && REPO="$repo" REPO_DIR="$workdir" "$@"); then
+		if [ "$INTERACTIVE" -eq 0 ]; then
+			echo "    command failed" >&2
+			FAILED+=("$repo")
+			rm -rf "$workdir"
+			continue
+		fi
+		echo "    command failed: $*" >&2
+		echo "    opening a shell in the clone at $workdir"
+		echo "    resolve the issue, then exit the shell to continue."
+		echo "    for a failed patch: git apply --3way <patch>, fix conflicts, git add"
+		echo "    exit with no changes to mark the repository as failed."
+		(cd "$workdir" && REPO="$repo" REPO_DIR="$workdir" "${SHELL:-/bin/sh}" -i) || true
+		(cd "$workdir" && git add -A)
+		if (cd "$workdir" && git diff --cached --quiet); then
+			echo "    no changes after recovery, marking as failed" >&2
+			FAILED+=("$repo")
+			rm -rf "$workdir"
+			continue
+		fi
+		if [ -n "$(cd "$workdir" && git grep -l '^<<<<<<< ' -- .)" ]; then
+			echo "    conflict markers remain, marking as failed" >&2
+			FAILED+=("$repo")
+			rm -rf "$workdir"
+			continue
+		fi
+		echo "    recovered, continuing"
+	fi
+
+	if [ "$DRY_RUN" -eq 1 ]; then
+		(cd "$workdir" && git add -A && git diff --cached --stat)
+		rm -rf "$workdir"
+		continue
+	fi
+
+	(
+		cd "$workdir"
+		git checkout -b "$BRANCH" --quiet
+		git add -A
+		if git diff --cached --quiet; then
+			exit 42 # no changes
+		fi
+		git commit --quiet -m "$MESSAGE"
+		if git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+			git fetch --quiet origin "$BRANCH"
+			git push --quiet --force-with-lease origin "$BRANCH"
+		else
+			git push --quiet -u origin "$BRANCH"
+		fi
+	) || {
+		if [ $? -eq 42 ]; then
+			echo "    no changes, skipping"
+			SKIPPED+=("$repo")
+		else
+			echo "    failed to commit or push" >&2
+			FAILED+=("$repo")
+		fi
+		rm -rf "$workdir"
+		continue
+	}
+
+	if [ -n "$(gh pr list --repo "$repo" --head "$BRANCH" --state open --json number --jq '.[0].number')" ]; then
+		echo "    updated existing pull request"
+	else
+		pr_args=(--repo "$repo" --title "$TITLE" --body "$BODY" --head "$BRANCH")
+		[ "$DRAFT" -eq 1 ] && pr_args+=(--draft)
+		[ -n "$REVIEWERS" ] && pr_args+=(--reviewer "$REVIEWERS")
+		if url="$(gh pr create "${pr_args[@]}")"; then
+			echo "    opened $url"
+		else
+			echo "    pushed branch, but failed to open pull request" >&2
+			FAILED+=("$repo")
+			rm -rf "$workdir"
+			continue
+		fi
+	fi
+
+	PUSHED+=("$repo")
+	rm -rf "$workdir"
+done
+
+echo
+echo "Summary for set '$SET':"
+echo "  pushed:  ${#PUSHED[@]}${PUSHED:+ $(printf '%s ' "${PUSHED[@]}")}"
+echo "  skipped: ${#SKIPPED[@]}${SKIPPED:+ $(printf '%s ' "${SKIPPED[@]}")}"
+echo "  failed:  ${#FAILED[@]}${FAILED:+ $(printf '%s ' "${FAILED[@]}")}"
+
+[ ${#FAILED[@]} -eq 0 ]
