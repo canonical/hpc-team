@@ -48,6 +48,8 @@ has a label with the same name as a label defined in the plan.
 | waiting for author   | 7498c0     | This issue or pull request is waiting for the author(s) to comment                      | Issues, pull requests              |
 | waiting for reviewer | 7498c0     | This issue or pull request is waiting for the reviewer(s) to comment                    | Issues, pull requests              |
 | ux                   | 3b33d1     | This pull request changes the user experience of the project                            | Pull requests                      |
+| jira                 | 0052CC     | Add this label to an issue to initiate a Jira sync via the GitHub bot                   | Issues                             |
+| synced-to-jira       | 003D99     | This issue has been synced to Jira by the GitHub bot                                    | Issues                             |
 
 ## Usage
 
