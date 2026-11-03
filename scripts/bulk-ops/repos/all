@@ -14,3 +14,4 @@ canonical/charmed-hpc-libs
 canonical/charmed-hpc-terraform
 canonical/charmed-hpc-docs
 canonical/hpc-team
+canonical/lustre-server

@@ -1,10 +1,10 @@
 # Bulk repository operations
 
-Scripts for applying a change or merging pull requests across many Charmed HPC
-repositories at once. Repository sets live in [`repos/`](repos/): each
-file is a set of `owner/repo` lines, `#` comments ignored. A path to a file in
-the same format works anywhere a set name does. Single-repository sets are not
-codified - use `gh` directly instead.
+[`bulk-ops.py`](bulk-ops.py) applies a change or merges pull requests across
+many Charmed HPC repositories at once. Repository sets live in
+[`repos/`](repos/): each file is a set of `owner/repo` lines, `#` comments
+ignored. A path to a file in the same format works anywhere a set name does.
+Single-repository sets are not codified - use `gh` directly instead.
 
 Sets cover only projects maintained directly as part of Charmed HPC, per the
 [underlying projects and dependencies](https://canonical-charmed-hpc.readthedocs-hosted.com/latest/reference/underlying-projects-and-dependencies/)
@@ -17,11 +17,11 @@ export it as a patch (`git diff > patches/update-ci.patch`), then:
 
 ```shell
 # Preview first, then push for real.
-scripts/bulk-ops/bulk-push -s charms -b chore/update-ci \
+scripts/bulk-ops/bulk-ops.py push -s charms -b chore/update-ci \
   -m "chore: update CI workflow" \
   --dry-run -- git apply "$PWD/patches/update-ci.patch"
 
-scripts/bulk-ops/bulk-push -s charms -b chore/update-ci \
+scripts/bulk-ops/bulk-ops.py push -s charms -b chore/update-ci \
   -m "chore: update CI workflow" \
   -- git apply "$PWD/patches/update-ci.patch"
 ```
@@ -36,8 +36,8 @@ failed.
 **Person B** reviews and merges:
 
 ```shell
-scripts/bulk-ops/bulk-status -s charms -b chore/update-ci
-scripts/bulk-ops/bulk-merge -s charms -b chore/update-ci --auto
+scripts/bulk-ops/bulk-ops.py status -s charms -b chore/update-ci
+scripts/bulk-ops/bulk-ops.py merge -s charms -b chore/update-ci --auto
 ```
 
 ## Example commands
@@ -73,4 +73,4 @@ or `$REPO` expansion - otherwise globs are expanded by your shell in the wrong
 directory. `$REPO` and `$REPO_DIR` are set inside each clone, so per-repository
 customization can key off the repository name.
 
-See `--help` on each script for all options.
+See `scripts/bulk-ops/bulk-ops.py <command> --help` for all options.

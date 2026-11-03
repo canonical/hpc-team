@@ -1,0 +1,12 @@
+# All repositories maintained directly as part of Charmed HPC except this repo.
+
+canonical/slurm-charms
+canonical/filesystem-charms
+canonical/sssd-operator
+canonical/apptainer-operator
+canonical/openssh-operator
+canonical/slurmutils
+canonical/charmed-hpc-libs
+canonical/charmed-hpc-terraform
+canonical/charmed-hpc-docs
+canonical/lustre-server
