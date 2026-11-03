@@ -5,4 +5,3 @@ canonical/filesystem-charms
 canonical/sssd-operator
 canonical/apptainer-operator
 canonical/openssh-operator
-canonical/lustre-server
