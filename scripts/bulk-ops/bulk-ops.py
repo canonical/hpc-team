@@ -19,11 +19,18 @@ repositories.
 Repository sets live in repos/: each file is a set of `owner/repo` lines, `#`
 comments ignored. A path to a file in the same format works anywhere a set name
 does. See README.md for the full workflow.
+
+The workflow is split into steps that operate on a cached set of clones
+(default ~/.cache/bulk-ops), so each step is fast to re-run: `clone` clones or
+updates the repositories of a set, `exec` runs a command in each clone, and
+`push` commits each clone's changes, pushes the branch to a fork (created
+automatically), and opens or updates the pull requests in one bulk step.
 """
 
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -33,11 +40,25 @@ from typing import NoReturn
 
 PROG = "bulk-ops"
 SETS_DIR = Path(__file__).resolve().parent / "repos"
+DEFAULT_WORKDIR = Path.home() / ".cache" / "bulk-ops"
 
 
 def die(message: str) -> NoReturn:
     print(f"{PROG}: error: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run ``cmd`` and capture its output."""
+    return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
+
+
+def git(workdir: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run git in ``workdir`` and capture its output."""
+    result = run(["git", "-C", str(workdir), *args])
+    if check and result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or f"git {' '.join(args)} failed")
+    return result
 
 
 def load_repos(set_name: str) -> list[str]:
@@ -75,27 +96,54 @@ def require_gh() -> None:
         die("not logged in to the GitHub CLI (run 'gh auth login')")
 
 
-def list_open_prs(repo: str, branch: str, fields: list[str]) -> list[dict] | None:
-    """Return the open pull requests for ``branch`` on ``repo``.
+def gh_login() -> str:
+    """Return the login of the authenticated GitHub user."""
+    result = run(["gh", "api", "user", "--jq", ".login"])
+    if result.returncode != 0:
+        die(f"could not determine GitHub login: {result.stderr.strip()}")
+    return result.stdout.strip()
 
-    Returns None if the query itself failed (the error is printed).
+
+def repo_dir(workdir: Path, repo: str) -> Path:
+    """Return the cache directory of ``repo`` (``owner/name``) in ``workdir``."""
+    if "/" not in repo:
+        die(f"invalid repository '{repo}', expected 'owner/name'")
+    owner, name = repo.split("/", 1)
+    return workdir / owner / name
+
+
+def default_branch(workdir: Path) -> str:
+    """Return the default branch of the repository cloned at ``workdir``."""
+    head = git(workdir, "rev-parse", "--abbrev-ref", "origin/HEAD", check=False)
+    if head.returncode == 0 and head.stdout.strip().startswith("origin/"):
+        return head.stdout.strip()[len("origin/") :]
+    symref = git(workdir, "ls-remote", "--symref", "origin", "HEAD", check=False)
+    for line in symref.stdout.splitlines():
+        if line.startswith("ref: refs/heads/"):
+            return line[len("ref: refs/heads/") :].split()[0]
+    raise RuntimeError("could not determine the default branch")
+
+
+def search_open_prs(repo: str, branch: str, fields: list[str]) -> list[dict] | None:
+    """Return the open pull requests on ``repo`` whose head branch is ``branch``.
+
+    Matches pull requests opened from forks too, which have ``login:branch``
+    heads. Returns None if the query itself failed (the error is printed).
     """
-    result = subprocess.run(
+    result = run(
         [
             "gh",
             "pr",
             "list",
             "--repo",
             repo,
-            "--head",
-            branch,
+            "--search",
+            f"head:{branch}",
             "--state",
             "open",
             "--json",
             ",".join(fields),
-        ],
-        capture_output=True,
-        text=True,
+        ]
     )
     if result.returncode != 0:
         print(
@@ -106,155 +154,410 @@ def list_open_prs(repo: str, branch: str, fields: list[str]) -> list[dict] | Non
     return json.loads(result.stdout or "[]")
 
 
+def find_pr_template(workdir: Path) -> Path | None:
+    """Return the pull request template of the repository at ``workdir``, if any."""
+    for base in (workdir / ".github", workdir / "docs", workdir):
+        if not base.is_dir():
+            continue
+        for entry in sorted(base.iterdir()):
+            if entry.is_file() and entry.name.lower() in (
+                "pull_request_template.md",
+                "pull_request_template.txt",
+            ):
+                return entry
+        for entry in sorted(base.iterdir()):
+            if entry.is_dir() and entry.name.lower() == "pull_request_template":
+                templates = sorted(entry.glob("*.md"))
+                if templates:
+                    return templates[0]
+    return None
+
+
+def template_text(target: Path) -> str | None:
+    """Return the pull request template of ``target`` as text, if any."""
+    template = find_pr_template(target)
+    if template is None:
+        return None
+    try:
+        return template.read_text()
+    except OSError as error:
+        print(f"warning: could not read {template}: {error}", file=sys.stderr)
+        return None
+
+
+def edit_text(base: str) -> str:
+    """Open the user's editor to edit ``base``; return the edited text."""
+    editor = (
+        os.environ.get("GH_EDITOR")
+        or os.environ.get("VISUAL")
+        or os.environ.get("EDITOR")
+        or "vi"
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".md", prefix=f"{PROG}-body-", delete=False
+    ) as file:
+        file.write(base)
+        path = Path(file.name)
+    try:
+        # The editor inherits the terminal so interactive editing works.
+        if subprocess.run(shlex.split(editor) + [str(path)]).returncode != 0:
+            die(f"editor '{editor}' exited with an error")
+        return path.read_text()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def print_summary(set_name: str, results: dict[str, list[str]]) -> None:
-    """Print the per-outcome summary shared by the push and merge commands."""
+    """Print the per-outcome summary shared by the commands."""
     print()
     print(f"Summary for set '{set_name}':")
     for label, repos in results.items():
         names = "".join(f" {repo}" for repo in repos)
-        print(f"  {label + ':':<9}{len(repos)}{names}")
+        print(f"  {label + ':':<10}{len(repos)}{names}")
 
 
-def run_git(
-    workdir: str, *args: str, check: bool = True
-) -> subprocess.CompletedProcess:
-    """Run git in the clone at ``workdir``, capturing its output."""
-    result = subprocess.run(["git", "-C", workdir, *args], capture_output=True, text=True)
-    if check and result.returncode != 0:
-        raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
-    return result
-
-
-def open_pr(repo: str, args: argparse.Namespace, title: str) -> bool:
-    """Open a pull request for the pushed branch, or report the existing one.
-
-    Returns True if a pull request exists or was opened.
-    """
-    prs = list_open_prs(repo, args.branch, ["number"])
-    if prs is None:
-        print(
-            "    pushed branch, but failed to check for existing pull request",
-            file=sys.stderr,
-        )
-        return False
-    if prs:
-        print("    updated existing pull request")
-        return True
-
-    create_cmd = [
-        "gh",
-        "pr",
-        "create",
-        "--repo",
-        repo,
-        "--title",
-        title,
-        "--body",
-        args.body,
-        "--head",
-        args.branch,
-    ]
-    if args.draft:
-        create_cmd.append("--draft")
-    if args.reviewers:
-        create_cmd.extend(["--reviewer", args.reviewers])
-    created = subprocess.run(create_cmd, capture_output=True, text=True)
-    if created.returncode != 0:
-        print(
-            f"    pushed branch, but failed to open pull request:"
-            f" {created.stderr.strip()}",
-            file=sys.stderr,
-        )
-        return False
-    print(f"    opened {created.stdout.strip()}")
-    return True
-
-
-def push_repo(repo: str, args: argparse.Namespace, title: str) -> str:
-    """Clone ``repo``, run the command in it, then commit, push, and open a PR.
-
-    Returns "pushed", "skipped", "failed", or "dry-run".
-    """
-    workdir = tempfile.mkdtemp(prefix="bulk-ops-")
-    try:
-        cloned = subprocess.run(
-            ["gh", "repo", "clone", repo, workdir, "--", "--depth", "1", "--quiet"],
-            capture_output=True,
-            text=True,
-        )
-        if cloned.returncode != 0:
-            print("    failed to clone", file=sys.stderr)
-            return "failed"
-
-        env = {**os.environ, "REPO": repo, "REPO_DIR": workdir}
-        if subprocess.run(args.command, cwd=workdir, env=env).returncode != 0:
-            if not args.interactive:
-                print("    command failed", file=sys.stderr)
-                return "failed"
-            print(f"    command failed: {' '.join(args.command)}", file=sys.stderr)
-            print(f"    opening a shell in the clone at {workdir}")
-            print("    resolve the issue, then exit the shell to continue.")
-            print("    for a failed patch: git apply --3way <patch>, fix conflicts, git add")
-            print("    exit with no changes to mark the repository as failed.")
-            shell = os.environ.get("SHELL") or "/bin/sh"
-            subprocess.run([shell, "-i"], cwd=workdir, env=env)
-            run_git(workdir, "add", "-A")
-            if run_git(workdir, "diff", "--cached", "--quiet", check=False).returncode == 0:
-                print("    no changes after recovery, marking as failed", file=sys.stderr)
-                return "failed"
-            if run_git(workdir, "grep", "-l", "^<<<<<<< ", "--", ".", check=False).stdout.strip():
-                print("    conflict markers remain, marking as failed", file=sys.stderr)
-                return "failed"
-            print("    recovered, continuing")
-
-        if args.dry_run:
-            run_git(workdir, "add", "-A")
-            subprocess.run(["git", "-C", workdir, "diff", "--cached", "--stat"])
-            return "dry-run"
-
-        try:
-            run_git(workdir, "checkout", "--quiet", "-b", args.branch)
-            run_git(workdir, "add", "-A")
-            if run_git(workdir, "diff", "--cached", "--quiet", check=False).returncode == 0:
-                print("    no changes, skipping")
-                return "skipped"
-            run_git(workdir, "commit", "--quiet", "-m", args.message)
-            remote = run_git(
-                workdir,
-                "ls-remote",
-                "--exit-code",
-                "origin",
-                f"refs/heads/{args.branch}",
-                check=False,
-            )
-            if remote.returncode == 0:
-                run_git(workdir, "fetch", "--quiet", "origin", args.branch)
-                run_git(workdir, "push", "--quiet", "--force-with-lease", "origin", args.branch)
-            else:
-                run_git(workdir, "push", "--quiet", "-u", "origin", args.branch)
-        except RuntimeError as error:
-            print(f"    failed to commit or push: {error}", file=sys.stderr)
-            return "failed"
-
-        return "pushed" if open_pr(repo, args, title) else "failed"
-    finally:
-        shutil.rmtree(workdir, ignore_errors=True)
-
-
-def cmd_push(args: argparse.Namespace) -> int:
-    title = args.title or args.message
+def cmd_clone(args: argparse.Namespace) -> int:
     repos = load_repos(args.set)
     require_gh()
 
-    results: dict[str, list[str]] = {"pushed": [], "skipped": [], "failed": []}
+    cloned: list[str] = []
+    updated: list[str] = []
+    failed: list[str] = []
+
     for repo in repos:
         print(f"==> {repo}")
-        outcome = push_repo(repo, args, title)
-        if outcome in results:
-            results[outcome].append(repo)
+        target = repo_dir(args.workdir, repo)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if (target / ".git").exists():
+                branch = default_branch(target)
+                git(target, "fetch", "--quiet", "--prune", "origin")
+                git(target, "checkout", "--quiet", "--force", branch)
+                git(target, "reset", "--quiet", "--hard", f"origin/{branch}")
+                git(target, "clean", "-fdq")
+                print("    updated")
+                updated.append(repo)
+            else:
+                result = run(
+                    ["gh", "repo", "clone", repo, str(target), "--", "--quiet"]
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        result.stderr.strip() or "gh repo clone failed"
+                    )
+                print(f"    cloned to {target}")
+                cloned.append(repo)
+        except RuntimeError as error:
+            print(f"    failed: {error}", file=sys.stderr)
+            failed.append(repo)
+
+    print_summary(
+        args.set, {"cloned": cloned, "updated": updated, "failed": failed}
+    )
+    return 1 if failed else 0
+
+
+def cmd_exec(args: argparse.Namespace) -> int:
+    repos = load_repos(args.set)
+    require_gh()
+
+    ok: list[str] = []
+    failed: list[str] = []
+
+    for repo in repos:
+        print(f"==> {repo}")
+        target = repo_dir(args.workdir, repo)
+        if not (target / ".git").exists():
+            print(
+                "    not in the workdir; run 'bulk-ops.py clone -s <set>' first",
+                file=sys.stderr,
+            )
+            failed.append(repo)
+            continue
+
+        if args.branch:
+            try:
+                base = default_branch(target)
+                git(target, "fetch", "--quiet", "--prune", "origin")
+                git(
+                    target,
+                    "checkout",
+                    "--quiet",
+                    "--force",
+                    "-B",
+                    args.branch,
+                    f"origin/{base}",
+                )
+                git(target, "clean", "-fdq")
+            except RuntimeError as error:
+                print(f"    failed to prepare branch: {error}", file=sys.stderr)
+                failed.append(repo)
+                continue
+
+        env = {**os.environ, "REPO": repo, "REPO_DIR": str(target)}
+        # The command inherits the terminal so its output is shown as-is.
+        if subprocess.run(args.command, cwd=str(target), env=env).returncode == 0:
+            ok.append(repo)
+            continue
+
+        if not args.interactive:
+            print("    command failed", file=sys.stderr)
+            failed.append(repo)
+            continue
+        print(f"    command failed: {' '.join(args.command)}", file=sys.stderr)
+        print(f"    opening a shell in {target}")
+        print("    resolve the issue, then exit the shell to continue.")
+        print("    for a failed patch: git apply --3way <patch>, fix conflicts, git add")
+        print("    exit with no changes to mark the repository as failed.")
+        shell = os.environ.get("SHELL") or "/bin/sh"
+        subprocess.run([shell, "-i"], cwd=str(target), env=env)
+        git(target, "add", "-A")
+        if git(target, "diff", "--cached", "--quiet", check=False).returncode == 0:
+            print("    no changes after recovery, marking as failed", file=sys.stderr)
+            failed.append(repo)
+            continue
+        if git(target, "grep", "-l", "^<<<<<<< ", "--", ".", check=False).stdout.strip():
+            print("    conflict markers remain, marking as failed", file=sys.stderr)
+            failed.append(repo)
+            continue
+        print("    recovered")
+        ok.append(repo)
+
+    print_summary(args.set, {"ok": ok, "failed": failed})
+    return 1 if failed else 0
+
+
+def cmd_push(args: argparse.Namespace) -> int:
+    repos = load_repos(args.set)
+    require_gh()
+    title = args.title or args.message
+    login: str | None = None
+
+    # Determine the pull request body of each repository: an explicit --body
+    # or --body-file wins, otherwise each repository defaults to its own
+    # pull request template. With --edit-body the body is opened in the
+    # editor before anything is pushed - once per distinct template, so a
+    # set of identical templates is a single editor session.
+    explicit = None
+    if args.body is not None:
+        explicit = args.body
+    elif args.body_file is not None:
+        try:
+            explicit = args.body_file.expanduser().read_text()
+        except OSError as error:
+            die(f"could not read --body-file: {error}")
+
+    bodies: dict[str, str | None] = {}
+    if args.edit_body:
+        if explicit is not None:
+            print(f"==> editing the pull request body ({len(repos)} repositories)")
+            edited = edit_text(explicit)
+            bodies = {repo: edited for repo in repos}
+        else:
+            groups: dict[str, list[str]] = {}
+            for repo in repos:
+                target = repo_dir(args.workdir, repo)
+                if not (target / ".git").exists():
+                    continue  # reported as a failure in the loop below
+                groups.setdefault(template_text(target) or "", []).append(repo)
+            if len(groups) > 1:
+                print(
+                    f"note: the set has {len(groups)} distinct pull request"
+                    " templates; opening one editor session for each"
+                )
+            for text, group in groups.items():
+                print(
+                    f"==> editing the pull request body ({len(group)} repositories)"
+                )
+                edited = edit_text(text)
+                for repo in group:
+                    bodies[repo] = edited
+    elif explicit is not None:
+        bodies = {repo: explicit for repo in repos}
+    else:
+        for repo in repos:
+            target = repo_dir(args.workdir, repo)
+            if (target / ".git").exists():
+                bodies[repo] = template_text(target)
+
+    update_bodies = args.edit_body or explicit is not None
+
+    results: dict[str, list[str]] = {}
+    if args.dry_run:
+        results["previewed"] = []
+    else:
+        results["pushed"] = []
+        results["skipped"] = []
+        results["failed"] = []
+
+    for repo in repos:
+        print(f"==> {repo}")
+        target = repo_dir(args.workdir, repo)
+        if not (target / ".git").exists():
+            print(
+                "    not in the workdir; run 'bulk-ops.py clone -s <set>' first",
+                file=sys.stderr,
+            )
+            results["failed"].append(repo)
+            continue
+
+        try:
+            git(target, "checkout", "--quiet", args.branch)
+        except RuntimeError:
+            print(
+                f"    branch '{args.branch}' not found;"
+                " run exec -b first",
+                file=sys.stderr,
+            )
+            results["failed"].append(repo)
+            continue
+
+        git(target, "add", "-A")
+
+        if args.dry_run:
+            # Show the full diff that would be committed and pushed.
+            subprocess.run(["git", "-C", str(target), "diff", "--cached"])
+            results["previewed"].append(repo)
+            continue
+
+        update_body = update_bodies and bool(bodies.get(repo))
+        has_changes = (
+            git(target, "diff", "--cached", "--quiet", check=False).returncode != 0
+        )
+        if not has_changes and not update_body:
+            print("    no changes, skipping")
+            results["skipped"].append(repo)
+            continue
+
+        if has_changes:
+            if git(target, "grep", "-l", "^<<<<<<< ", "--", ".", check=False).stdout.strip():
+                print("    conflict markers remain, marking as failed", file=sys.stderr)
+                results["failed"].append(repo)
+                continue
+
+            try:
+                git(target, "commit", "--quiet", "-m", args.message)
+
+                owner, name = repo.split("/", 1)
+                if login is None:
+                    login = gh_login()
+                if owner == login:
+                    # Own repository: no fork needed.
+                    remote, head = "origin", args.branch
+                else:
+                    forked = run(["gh", "repo", "fork", repo, "--clone=false"])
+                    if forked.returncode != 0:
+                        raise RuntimeError(
+                            f"could not create fork: {forked.stderr.strip()}"
+                        )
+                    remote, head = "fork", f"{login}:{args.branch}"
+                    fork_url = f"https://github.com/{login}/{name}.git"
+                    if git(target, "remote", "get-url", "fork", check=False).returncode == 0:
+                        git(target, "remote", "set-url", "fork", fork_url)
+                    else:
+                        git(target, "remote", "add", "fork", fork_url)
+                    print(f"    pushing to fork {login}/{name}")
+
+                if (
+                    git(
+                        target,
+                        "ls-remote",
+                        "--exit-code",
+                        remote,
+                        f"refs/heads/{args.branch}",
+                        check=False,
+                    ).returncode
+                    == 0
+                ):
+                    git(target, "fetch", "--quiet", remote, args.branch)
+                    git(
+                        target,
+                        "push",
+                        "--quiet",
+                        "--force-with-lease",
+                        remote,
+                        args.branch,
+                    )
+                else:
+                    git(target, "push", "--quiet", "-u", remote, args.branch)
+            except RuntimeError as error:
+                print(f"    failed to commit or push: {error}", file=sys.stderr)
+                results["failed"].append(repo)
+                continue
+        else:
+            # Nothing new to push, but there is a body to update.
+            print("    no new changes")
+
+        prs = search_open_prs(repo, args.branch, ["number", "url"])
+        if prs is None:
+            print(
+                "    failed to check for existing pull request",
+                file=sys.stderr,
+            )
+            results["failed"].append(repo)
+        elif prs:
+            if update_body:
+                # An explicit or edited body also updates existing pull
+                # requests. Go through the REST API: 'gh pr edit' uses a
+                # GraphQL mutation that fails on repositories that still use
+                # classic Projects.
+                edited = run(
+                    [
+                        "gh",
+                        "api",
+                        f"repos/{repo}/pulls/{prs[0]['number']}",
+                        "-X",
+                        "PATCH",
+                        "-f",
+                        f"body={bodies[repo]}",
+                    ]
+                )
+                if edited.returncode == 0:
+                    print("    updated existing pull request (body)")
+                else:
+                    print(
+                        "    updated existing pull request, but could not update"
+                        f" its body: {edited.stderr.strip()}",
+                        file=sys.stderr,
+                    )
+            else:
+                print("    updated existing pull request")
+            results["pushed"].append(repo)
+        elif has_changes:
+            create_cmd = [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                repo,
+                "--title",
+                title,
+                "--head",
+                head,
+            ]
+            if bodies.get(repo):
+                create_cmd += ["--body", bodies[repo]]
+            if args.draft:
+                create_cmd.append("--draft")
+            if args.reviewers:
+                create_cmd += ["--reviewer", args.reviewers]
+            created = run(create_cmd)
+            if created.returncode == 0:
+                print(f"    opened {created.stdout.strip()}")
+                results["pushed"].append(repo)
+            else:
+                print(
+                    "    pushed branch, but failed to open pull request:"
+                    f" {created.stderr.strip()}",
+                    file=sys.stderr,
+                )
+                results["failed"].append(repo)
+        else:
+            print("    no changes and no pull request to update, skipping")
+            results["skipped"].append(repo)
 
     print_summary(args.set, results)
-    return 1 if results["failed"] else 0
+    return 1 if results.get("failed") else 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -263,7 +566,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     errors = 0
     for repo in repos:
-        prs = list_open_prs(
+        prs = search_open_prs(
             repo, args.branch, ["url", "mergeStateStatus", "reviewDecision"]
         )
         if prs is None:
@@ -290,7 +593,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
     for repo in repos:
         print(f"==> {repo}")
 
-        prs = list_open_prs(repo, args.branch, ["number", "url", "mergeStateStatus"])
+        prs = search_open_prs(repo, args.branch, ["number", "url", "mergeStateStatus"])
         if prs is None:
             failed.append(repo)
             continue
@@ -308,10 +611,8 @@ def cmd_merge(args: argparse.Namespace) -> int:
             continue
 
         if args.approve:
-            review = subprocess.run(
-                ["gh", "pr", "review", "--repo", repo, str(pr["number"]), "--approve"],
-                capture_output=True,
-                text=True,
+            review = run(
+                ["gh", "pr", "review", "--repo", repo, str(pr["number"]), "--approve"]
             )
             if review.returncode != 0:
                 print(
@@ -345,23 +646,25 @@ def cmd_merge(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
-    """Build the CLI parser; returns the root parser and the push subparser."""
+def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "-s",
         "--set",
         required=True,
         help=(
-            "repository set name from repos/ (e.g. 'charms', 'all') or a path"
-            " to a file listing repositories"
+            "repository set name from repos/ (e.g. 'charms', 'all') or a path to a"
+            " file listing repositories"
         ),
     )
-    common.add_argument(
-        "-b",
-        "--branch",
-        required=True,
-        help="head branch of the pull requests on each repository",
+
+    work = argparse.ArgumentParser(add_help=False)
+    work.add_argument(
+        "-w",
+        "--workdir",
+        type=Path,
+        default=DEFAULT_WORKDIR,
+        help=f"directory holding the cached clones (default: {DEFAULT_WORKDIR})",
     )
 
     parser = argparse.ArgumentParser(
@@ -372,29 +675,86 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         ),
     )
     sub = parser.add_subparsers(
-        dest="action", required=True, metavar="{push,status,merge}"
+        dest="action", required=True, metavar="{clone,exec,push,status,merge}"
     )
+
+    clone = sub.add_parser(
+        "clone",
+        parents=[common, work],
+        help="clone or update every repository in a set",
+        description=(
+            "Clone every repository in a set into the workdir, or update the"
+            " existing clones to the latest default branch. Updating resets each"
+            " clone, discarding uncommitted changes and stale branches."
+        ),
+    )
+    clone.set_defaults(func=cmd_clone)
+
+    exec_cmd = sub.add_parser(
+        "exec",
+        parents=[common, work],
+        help="run a command in each clone of a set",
+        description="Run a command at the root of each clone of a set.",
+        epilog=(
+            "The command after '--' runs at the root of each clone with the REPO"
+            " (owner/name) and REPO_DIR (absolute path) environment variables"
+            " set.\n\n"
+            "With -b, the branch is created (or reset) from the default branch"
+            " before the command runs; without it, the command runs on the current"
+            " state of each clone.\n\n"
+            "example:\n"
+            "  bulk-ops.py exec -s charms -b chore/update-ci \\\n"
+            '    -- git apply "$PWD/patches/update-ci.patch"'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    exec_cmd.add_argument(
+        "-b",
+        "--branch",
+        help="create (or reset) this branch from the default branch before running",
+    )
+    exec_cmd.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        help=(
+            "if the command fails on a repository, open a shell in the clone to"
+            " resolve the issue manually, then continue with the resolved changes"
+        ),
+    )
+    exec_cmd.set_defaults(func=cmd_exec)
 
     push = sub.add_parser(
         "push",
-        parents=[common],
-        help="apply a change and open (or update) a pull request on each repository",
+        parents=[common, work],
+        help="commit each clone, push to a fork, and open the pull requests",
         description=(
-            "Apply a change across a set of repositories, then push a branch and"
-            " open (or update) a pull request on each repository."
+            "Commit the changes of each clone of a set on a branch, push the"
+            " branch to a fork of the repository (created automatically), and"
+            " open or update a pull request."
         ),
         epilog=(
-            "The command after '--' runs at the root of each cloned repository with"
-            " the REPO (owner/name) and REPO_DIR environment variables set."
-            " Repositories where the command produces no changes are skipped."
-            " Re-running with the same branch name force-pushes and updates the"
-            " existing pull request rather than opening a duplicate.\n\n"
+            "The pull request body defaults to the repository's pull request"
+            " template. With --edit-body the body is opened in your editor"
+            " before anything is pushed: one session per distinct template, so"
+            " identical templates are edited once and applied to every pull"
+            " request. Re-running push with the same branch force-pushes and"
+            " updates the existing pull request rather than opening a"
+            " duplicate, and an explicit or edited body also updates the"
+            " bodies of the existing pull requests. Run with --dry-run first"
+            " to review the full diff of every repository before anything is"
+            " committed or pushed.\n\n"
             "example:\n"
-            "  bulk-ops push -s charms -b chore/sync-contributing \\\n"
-            '    -m "chore: sync CONTRIBUTING.md from hpc-team" \\\n'
-            "    -- cp \"$HOME/hpc-team/CONTRIBUTING.md\" CONTRIBUTING.md"
+            "  bulk-ops.py push -s charms -b chore/update-ci \\\n"
+            '    -m "chore: update CI workflow"'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    push.add_argument(
+        "-b",
+        "--branch",
+        required=True,
+        help="branch to commit and push in each clone",
     )
     push.add_argument(
         "-m",
@@ -405,7 +765,25 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     push.add_argument(
         "-t", "--title", help="PR title (defaults to the commit message)"
     )
-    push.add_argument("--body", default="", help="PR body")
+    body = push.add_mutually_exclusive_group()
+    body.add_argument(
+        "--body", help="PR body (defaults to the PR template)"
+    )
+    body.add_argument(
+        "--body-file",
+        type=Path,
+        help="PR body from a file (defaults to the PR template)",
+    )
+    push.add_argument(
+        "-e",
+        "--edit-body",
+        action="store_true",
+        help=(
+            "open the pull request body in your editor before anything is"
+            " pushed, once per distinct template (a set of identical templates"
+            " is a single session)"
+        ),
+    )
     push.add_argument(
         "--reviewers",
         help=(
@@ -417,22 +795,10 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         "--draft", action="store_true", help="open pull requests as drafts"
     )
     push.add_argument(
-        "-i",
-        "--interactive",
-        action="store_true",
-        help=(
-            "if the command fails on a repository, open a shell in the clone to"
-            " resolve the issue manually, then continue with the resolved changes"
-        ),
-    )
-    push.add_argument(
         "-n",
         "--dry-run",
         action="store_true",
-        help=(
-            "clone and run the command, show the resulting diff for each"
-            " repository, but do not commit or push"
-        ),
+        help="show the diff of each clone without committing, pushing, or opening PRs",
     )
     push.set_defaults(func=cmd_push)
 
@@ -441,9 +807,15 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         parents=[common],
         help="show the status of the pull requests opened by push",
         description=(
-            "Show the status of the pull requests opened by 'bulk-ops push'"
+            "Show the status of the pull requests opened by 'bulk-ops.py push'"
             " across a set of repositories."
         ),
+    )
+    status.add_argument(
+        "-b",
+        "--branch",
+        required=True,
+        help="head branch of the pull requests to inspect",
     )
     status.set_defaults(func=cmd_status)
 
@@ -453,8 +825,14 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
         help="merge the pull requests opened by push",
         description=(
             "Merge (and optionally approve) the pull requests opened by"
-            " 'bulk-ops push' across a set of repositories."
+            " 'bulk-ops.py push' across a set of repositories."
         ),
+    )
+    merge.add_argument(
+        "-b",
+        "--branch",
+        required=True,
+        help="head branch of the pull requests to merge",
     )
     merge.add_argument(
         "-m",
@@ -493,22 +871,27 @@ def build_parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     )
     merge.set_defaults(func=cmd_merge)
 
-    return parser, push
+    return parser
 
 
 def main() -> int:
-    # Split the arguments at '--' so the push command may contain arbitrary options.
+    # Split the arguments at '--' so the exec command may contain arbitrary
+    # options.
     argv = sys.argv[1:]
     command = []
     if "--" in argv:
         split = argv.index("--")
         command, argv = argv[split + 1 :], argv[:split]
 
-    parser, push = build_parser()
+    parser = build_parser()
     args = parser.parse_args(argv)
+    if hasattr(args, "workdir"):
+        args.workdir = args.workdir.expanduser().resolve()
     args.command = command
-    if args.action == "push" and not command:
-        push.error("missing command after '--'")
+    if args.action == "exec" and not command:
+        parser.error("exec requires a command after '--'")
+    if args.action != "exec" and command:
+        parser.error(f"the '{args.action}' command does not take a command after '--'")
     return args.func(args)
 
 

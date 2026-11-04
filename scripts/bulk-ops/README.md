@@ -1,10 +1,20 @@
 # Bulk repository operations
 
-[`bulk-ops.py`](bulk-ops.py) applies a change or merges pull requests across
-many Charmed HPC repositories at once. Repository sets live in
-[`repos/`](repos/): each file is a set of `owner/repo` lines, `#` comments
-ignored. A path to a file in the same format works anywhere a set name does.
-Single-repository sets are not codified - use `gh` directly instead.
+[`bulk-ops.py`](bulk-ops.py) applies a change or merges pull requests across many Charmed HPC
+repositories at once. Repository sets live in [`repos/`](repos/): each
+file is a set of `owner/repo` lines, `#` comments ignored. A path to a file in
+the same format works anywhere a set name does. Single-repository sets are not
+codified - use `gh` directly instead.
+
+The tool works on a local cache of clones (default `~/.cache/bulk-ops`,
+override with `-w/--workdir`), so each step is split and fast to re-run:
+
+- `clone` clones (or updates) every repository in a set.
+- `exec` runs a command at the root of each clone, optionally on a fresh branch.
+- `push` commits each clone's changes, pushes the branch to a fork (created
+  automatically), and opens or updates the pull requests - in one bulk step at
+  the end, after you've reviewed everything.
+- `status` and `merge` inspect and merge the pull requests via the GitHub API.
 
 Sets cover only projects maintained directly as part of Charmed HPC, per the
 [underlying projects and dependencies](https://canonical-charmed-hpc.readthedocs-hosted.com/latest/reference/underlying-projects-and-dependencies/)
@@ -16,22 +26,41 @@ reference.
 export it as a patch (`git diff > patches/update-ci.patch`), then:
 
 ```shell
-# Preview first, then push for real.
-scripts/bulk-ops/bulk-ops.py push -s charms -b chore/update-ci \
-  -m "chore: update CI workflow" \
-  --dry-run -- git apply "$PWD/patches/update-ci.patch"
+# 1. Clone (or update) every repository in the set. Done once; re-run
+#    whenever you want the clones refreshed.
+scripts/bulk-ops/bulk-ops.py clone -s charms
 
-scripts/bulk-ops/bulk-ops.py push -s charms -b chore/update-ci \
-  -m "chore: update CI workflow" \
+# 2. Apply the change on a branch in each clone. Fix-ups afterwards are
+#    just edits in ~/.cache/bulk-ops - nothing is pushed yet.
+scripts/bulk-ops/bulk-ops.py exec -s charms -b chore/update-ci \
   -- git apply "$PWD/patches/update-ci.patch"
+
+#    Preview the full diff of every repository before anything happens:
+scripts/bulk-ops/bulk-ops.py push -s charms -b chore/update-ci \
+  -m "chore: update CI workflow" --dry-run
+
+# 3. Commit, push each branch to a fork, and open or update the pull
+#    requests - all at once, at the end.
+scripts/bulk-ops/bulk-ops.py push -s charms -b chore/update-ci \
+  -m "chore: update CI workflow"
 ```
 
-Repositories where the patch does not apply cleanly are reported as failures
-and left untouched. Pass `--interactive` (`-i`) to instead open a shell in the
-clone when the command fails, so you can resolve conflicts by hand
-(`git apply --3way`, fix markers in your editor, `git add`) and continue with
-the resolved changes; exit the shell with no changes to mark the repository as
-failed.
+Branches are pushed to a fork of each repository, so no permissions on the
+target repositories are required. Pull request bodies default to each
+repository's own pull request template. Pass `-e`/`--edit-body` to `push` to
+open the body in your editor before anything is pushed: repositories that
+share the same template are edited in a single session and the result is
+applied to every pull request of the set (distinct templates get one session
+each, and `--body`/`--body-file` set the starting text without a template).
+Re-running `push` with the same branch force-pushes and updates the existing
+pull requests rather than opening duplicates - and with an explicit or edited
+body, updates their bodies too, even when there is nothing new to push.
+
+If the `exec` command fails on a repository, pass `--interactive` (`-i`) to
+open a shell in the clone instead (`git apply --3way`, fix markers in your
+editor, `git add`), then exit the shell to continue. Exit with no changes to
+mark the repository as failed. Without `-b`, `exec` runs on the current state
+of each clone rather than resetting a branch first.
 
 **Person B** reviews and merges:
 
@@ -42,7 +71,7 @@ scripts/bulk-ops/bulk-ops.py merge -s charms -b chore/update-ci --auto
 
 ## Example commands
 
-The command after `--` runs at the root of each cloned repository, so anything
+The command after `--` runs at the root of each clone, so anything
 that modifies the working tree works:
 
 ```shell
