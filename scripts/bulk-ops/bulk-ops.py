@@ -217,35 +217,30 @@ def edit_text(base: str, path: Path | None = None) -> str:
             path.unlink(missing_ok=True)
 
 
-def derive_fork_url(origin_url: str, login: str) -> str | None:
-    """Return ``origin_url`` rewritten to point at ``login``'s fork.
+def derive_fork_url(origin_url: str, fork: str) -> str | None:
+    """Return ``origin_url`` rewritten to point at ``fork`` (``owner/name``).
 
-    Keeps the protocol and host of ``origin_url``, swapping only the owner
-    so https and ssh (both scp-like and ssh:// forms) remotes keep working:
+    Keeps the protocol and host of ``origin_url`` so https and ssh (both
+    scp-like and ssh:// forms) remotes keep working. The fork name is taken
+    as-is, so forks that exist under a different name than their upstream
+    (e.g. the upstream was renamed after forking) resolve correctly:
 
-        https://github.com/canonical/name.git  ->  https://github.com/<login>/name.git
-        git@github.com:canonical/name.git     ->  git@github.com:<login>/name.git
-        ssh://git@github.com/canonical/name   ->  ssh://git@github.com/<login>/name
+        https://github.com/canonical/a.git  ->  https://github.com/<fork>.git
+        git@github.com:canonical/a.git     ->  git@github.com:<fork>.git
+        ssh://git@github.com/canonical/a   ->  ssh://git@github.com/<fork>.git
 
     Returns None if ``origin_url`` does not look like a GitHub remote.
     """
     url = origin_url.strip()
     # scp-like syntax: git@host:owner/name.git (no scheme separator)
     if "@" in url.split("/", 1)[0] and ("://" not in url):
-        host, sep, path = url.rpartition(":")
-        parts = path.strip("/").split("/")
-        if sep and len(parts) >= 2:
-            return f"{host}:{login}/{'/'.join(parts[1:])}"
-        return None
+        host = url.split(":", 1)[0]
+        return f"{host}:{fork}.git"
     # scheme syntax: https://github.com/owner/name.git
     if "://" in url:
         scheme, rest = url.split("://", 1)
-        parts = rest.strip("/").split("/")
-        if len(parts) >= 3:
-            host, owner, name = parts[0], parts[1], parts[2]
-            remainder = "/".join(parts[3:])
-            suffix = f"/{remainder}" if remainder else ""
-            return f"{scheme}://{host}/{login}/{name}{suffix}"
+        host = rest.split("/", 1)[0]
+        return f"{scheme}://{host}/{fork}.git"
     return None
 
 
@@ -550,32 +545,46 @@ def cmd_push(args: argparse.Namespace) -> int:
                 git(target, "commit", "--quiet", "-m", args.message)
 
             if should_push:
-                owner, name = repo.split("/", 1)
+                owner = repo.split("/", 1)[0]
                 if login is None:
                     login = gh_login()
                 if owner == login:
                     # Own repository: no fork needed.
                     remote, head = "origin", args.branch
                 else:
-                    forked = run(["gh", "repo", "fork", repo, "--clone=false"])
+                    # POST /forks returns the existing fork object (with its
+                    # real full_name) when a fork already exists, so forks
+                    # named differently from their upstream still resolve.
+                    forked = run(
+                        [
+                            "gh",
+                            "api",
+                            "--method",
+                            "POST",
+                            f"repos/{repo}/forks",
+                            "-q",
+                            ".full_name",
+                        ]
+                    )
                     if forked.returncode != 0:
                         raise RuntimeError(
                             f"could not create fork: {forked.stderr.strip()}"
                         )
+                    fork = forked.stdout.strip()
                     remote, head = "fork", f"{login}:{args.branch}"
                     # Match the protocol of the clone's origin remote, so
                     # ssh users get an ssh fork remote instead of https.
                     origin_url = git(
                         target, "remote", "get-url", "origin", check=False
                     ).stdout.strip()
-                    fork_url = derive_fork_url(origin_url, login) or (
-                        f"https://github.com/{login}/{name}.git"
+                    fork_url = derive_fork_url(origin_url, fork) or (
+                        f"https://github.com/{fork}.git"
                     )
                     if git(target, "remote", "get-url", "fork", check=False).returncode == 0:
                         git(target, "remote", "set-url", "fork", fork_url)
                     else:
                         git(target, "remote", "add", "fork", fork_url)
-                    print(f"    pushing to fork {login}/{name}")
+                    print(f"    pushing to fork {fork}")
 
                 if (
                     git(
