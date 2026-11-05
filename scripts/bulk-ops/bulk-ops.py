@@ -185,26 +185,60 @@ def template_text(target: Path) -> str | None:
         return None
 
 
-def edit_text(base: str) -> str:
-    """Open the user's editor to edit ``base``; return the edited text."""
+def edit_text(base: str, path: Path | None = None) -> str:
+    """Open the user's editor on ``base``; return the edited text.
+
+    With ``path``, the text is edited in that file (kept afterwards, so the
+    editor shows its real location); without, a throwaway temp file is used.
+    """
     editor = (
         os.environ.get("GH_EDITOR")
         or os.environ.get("VISUAL")
         or os.environ.get("EDITOR")
         or "vi"
     )
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".md", prefix=f"{PROG}-body-", delete=False
-    ) as file:
-        file.write(base)
-        path = Path(file.name)
+    tmp = path is None
+    if tmp:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", prefix=f"{PROG}-body-", delete=False
+        ) as file:
+            file.write(base)
+            path = Path(file.name)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(base)
     try:
         # The editor inherits the terminal so interactive editing works.
         if subprocess.run(shlex.split(editor) + [str(path)]).returncode != 0:
             die(f"editor '{editor}' exited with an error")
         return path.read_text()
     finally:
-        path.unlink(missing_ok=True)
+        if tmp:
+            path.unlink(missing_ok=True)
+
+
+def cached_body_path(workdir: Path, branch: str, repo: str) -> Path:
+    """Return the cached pull request body file of ``repo`` for ``branch``."""
+    return workdir / ".bodies" / branch / f"{repo}.md"
+
+
+def read_cached_body(workdir: Path, branch: str, repo: str) -> str | None:
+    """Return the cached pull request body of ``repo`` for ``branch``, if any."""
+    try:
+        return cached_body_path(workdir, branch, repo).read_text()
+    except OSError:
+        return None
+
+
+def save_cached_bodies(
+    workdir: Path, branch: str, bodies: dict[str, str | None]
+) -> Path:
+    """Cache ``bodies`` under the workdir for ``branch``; return the cache dir."""
+    for repo, body in bodies.items():
+        path = cached_body_path(workdir, branch, repo)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body or "")
+    return workdir / ".bodies" / branch
 
 
 def print_summary(set_name: str, results: dict[str, list[str]]) -> None:
@@ -348,47 +382,65 @@ def cmd_push(args: argparse.Namespace) -> int:
             die(f"could not read --body-file: {error}")
 
     bodies: dict[str, str | None] = {}
+    from_cache: set[str] = set()
     if args.edit_body:
-        if explicit is not None:
-            print(f"==> editing the pull request body ({len(repos)} repositories)")
-            edited = edit_text(explicit)
-            bodies = {repo: edited for repo in repos}
-        else:
-            groups: dict[str, list[str]] = {}
-            for repo in repos:
-                target = repo_dir(args.workdir, repo)
-                if not (target / ".git").exists():
-                    continue  # reported as a failure in the loop below
-                groups.setdefault(template_text(target) or "", []).append(repo)
-            if len(groups) > 1:
-                print(
-                    f"note: the set has {len(groups)} distinct pull request"
-                    " templates; opening one editor session for each"
-                )
-            for text, group in groups.items():
-                print(
-                    f"==> editing the pull request body ({len(group)} repositories)"
-                )
-                edited = edit_text(text)
-                for repo in group:
-                    bodies[repo] = edited
+        # Open the body in the editor before anything is pushed, one session
+        # per distinct base text: an explicit --body/--body-file, a body
+        # cached by a previous run, or the repository's template. The edited
+        # bodies are cached in the workdir and reused by later push runs.
+        groups: dict[str, list[str]] = {}
+        for repo in repos:
+            target = repo_dir(args.workdir, repo)
+            if not (target / ".git").exists():
+                continue  # reported as a failure in the loop below
+            base = explicit
+            if base is None and not args.no_cached_body:
+                base = read_cached_body(args.workdir, args.branch, repo)
+            if base is None:
+                base = template_text(target)
+            groups.setdefault(base or "", []).append(repo)
+        if len(groups) > 1:
+            print(
+                f"note: the set has {len(groups)} distinct pull request"
+                " bodies to edit; opening one editor session for each"
+            )
+        for text, group in groups.items():
+            print(
+                "==> editing the pull request body for"
+                f" {', '.join(group)}"
+            )
+            # Edit the cached file of the first member of the group, so the
+            # editor shows which repository the body belongs to; the result
+            # is copied to every member below.
+            anchor = cached_body_path(args.workdir, args.branch, group[0])
+            edited = edit_text(text, anchor)
+            for repo in group:
+                bodies[repo] = edited
+        cache_dir = save_cached_bodies(args.workdir, args.branch, bodies)
+        print(f"    saved {len(bodies)} edited bodies to {cache_dir}")
     elif explicit is not None:
         bodies = {repo: explicit for repo in repos}
     else:
         for repo in repos:
             target = repo_dir(args.workdir, repo)
-            if (target / ".git").exists():
+            if not (target / ".git").exists():
+                continue
+            if not args.no_cached_body:
+                cached = read_cached_body(args.workdir, args.branch, repo)
+                if cached is not None:
+                    bodies[repo] = cached
+                    from_cache.add(repo)
+            if bodies.get(repo) is None:
                 bodies[repo] = template_text(target)
 
     update_bodies = args.edit_body or explicit is not None
 
-    results: dict[str, list[str]] = {}
-    if args.dry_run:
-        results["previewed"] = []
-    else:
-        results["pushed"] = []
-        results["skipped"] = []
-        results["failed"] = []
+    results: dict[str, list[str]] = {
+        "previewed": [],
+        "pushed": [],
+        "skipped": [],
+        "failed": [],
+    }
 
     for repo in repos:
         print(f"==> {repo}")
@@ -417,6 +469,11 @@ def cmd_push(args: argparse.Namespace) -> int:
         if args.dry_run:
             # Show the full diff that would be committed and pushed.
             subprocess.run(["git", "-C", str(target), "diff", "--cached"])
+            if repo in from_cache:
+                print(
+                    "    body: cached"
+                    f" ({cached_body_path(args.workdir, args.branch, repo)})"
+                )
             results["previewed"].append(repo)
             continue
 
@@ -556,8 +613,20 @@ def cmd_push(args: argparse.Namespace) -> int:
             print("    no changes and no pull request to update, skipping")
             results["skipped"].append(repo)
 
-    print_summary(args.set, results)
-    return 1 if results.get("failed") else 0
+    if args.dry_run:
+        print_summary(
+            args.set, {"previewed": results["previewed"], "failed": results["failed"]}
+        )
+    else:
+        print_summary(
+            args.set,
+            {
+                "pushed": results["pushed"],
+                "skipped": results["skipped"],
+                "failed": results["failed"],
+            },
+        )
+    return 1 if results["failed"] else 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -738,12 +807,17 @@ def build_parser() -> argparse.ArgumentParser:
             " template. With --edit-body the body is opened in your editor"
             " before anything is pushed: one session per distinct template, so"
             " identical templates are edited once and applied to every pull"
-            " request. Re-running push with the same branch force-pushes and"
-            " updates the existing pull request rather than opening a"
-            " duplicate, and an explicit or edited body also updates the"
-            " bodies of the existing pull requests. Run with --dry-run first"
-            " to review the full diff of every repository before anything is"
-            " committed or pushed.\n\n"
+            " request. Edited bodies are cached under the workdir"
+            " (.bodies/<branch>/) and reused by later push runs, so"
+            " 'push --dry-run -e' drafts the body while reviewing the diffs"
+            " and the next push opens the pull requests with that draft;"
+            " --no-cached-body starts over from the template. Re-running"
+            " push with the same branch force-pushes and updates the"
+            " existing pull request rather than opening a duplicate, and an"
+            " explicit or edited body also updates the bodies of the"
+            " existing pull requests. Run with --dry-run first to review"
+            " the full diff of every repository before anything is committed"
+            " or pushed.\n\n"
             "example:\n"
             "  bulk-ops.py push -s charms -b chore/update-ci \\\n"
             '    -m "chore: update CI workflow"'
@@ -782,6 +856,15 @@ def build_parser() -> argparse.ArgumentParser:
             "open the pull request body in your editor before anything is"
             " pushed, once per distinct template (a set of identical templates"
             " is a single session)"
+        ),
+    )
+    push.add_argument(
+        "--no-cached-body",
+        action="store_true",
+        help=(
+            "ignore pull request bodies cached by a previous --edit-body"
+            " run; with --edit-body, start from the template again and"
+            " overwrite the cache"
         ),
     )
     push.add_argument(

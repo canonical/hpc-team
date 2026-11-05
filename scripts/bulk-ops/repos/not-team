@@ -9,4 +9,4 @@ canonical/slurmutils
 canonical/charmed-hpc-libs
 canonical/charmed-hpc-terraform
 canonical/charmed-hpc-docs
-canonical/lustre-server
+canonical/hpc-team

@@ -56,6 +56,14 @@ Re-running `push` with the same branch force-pushes and updates the existing
 pull requests rather than opening duplicates - and with an explicit or edited
 body, updates their bodies too, even when there is nothing new to push.
 
+Edited bodies are cached under the workdir
+(`.bodies/<branch>/<owner>/<repo>.md`) and reused by later `push` runs, so you
+can draft the body with `push --dry-run -e`, review the diffs, and open the
+pull requests with a plain `push` afterwards. With `-e` the editor opens the
+cached file itself, and each session names the repositories it covers, so
+you always know which repository you are editing. Pass `--no-cached-body` to
+start over from the template.
+
 If the `exec` command fails on a repository, pass `--interactive` (`-i`) to
 open a shell in the clone instead (`git apply --3way`, fix markers in your
 editor, `git add`), then exit the shell to continue. Exit with no changes to
