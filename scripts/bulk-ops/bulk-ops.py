@@ -494,8 +494,19 @@ def cmd_push(args: argparse.Namespace) -> int:
         git(target, "add", "-A")
 
         if args.dry_run:
-            # Show the full diff that would be committed and pushed.
-            subprocess.run(["git", "-C", str(target), "diff", "--cached"])
+            # Show the full diff that would be committed and pushed, with
+            # absolute paths so files can be opened directly from the output.
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(target),
+                    "diff",
+                    "--cached",
+                    f"--src-prefix={target}/a/",
+                    f"--dst-prefix={target}/b/",
+                ]
+            )
             if repo in from_cache:
                 print(
                     "    body: cached"
