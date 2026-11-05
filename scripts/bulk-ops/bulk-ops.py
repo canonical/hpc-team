@@ -217,6 +217,38 @@ def edit_text(base: str, path: Path | None = None) -> str:
             path.unlink(missing_ok=True)
 
 
+def derive_fork_url(origin_url: str, login: str) -> str | None:
+    """Return ``origin_url`` rewritten to point at ``login``'s fork.
+
+    Keeps the protocol and host of ``origin_url``, swapping only the owner
+    so https and ssh (both scp-like and ssh:// forms) remotes keep working:
+
+        https://github.com/canonical/name.git  ->  https://github.com/<login>/name.git
+        git@github.com:canonical/name.git     ->  git@github.com:<login>/name.git
+        ssh://git@github.com/canonical/name   ->  ssh://git@github.com/<login>/name
+
+    Returns None if ``origin_url`` does not look like a GitHub remote.
+    """
+    url = origin_url.strip()
+    # scp-like syntax: git@host:owner/name.git (no scheme separator)
+    if "@" in url.split("/", 1)[0] and ("://" not in url):
+        host, sep, path = url.rpartition(":")
+        parts = path.strip("/").split("/")
+        if sep and len(parts) >= 2:
+            return f"{host}:{login}/{'/'.join(parts[1:])}"
+        return None
+    # scheme syntax: https://github.com/owner/name.git
+    if "://" in url:
+        scheme, rest = url.split("://", 1)
+        parts = rest.strip("/").split("/")
+        if len(parts) >= 3:
+            host, owner, name = parts[0], parts[1], parts[2]
+            remainder = "/".join(parts[3:])
+            suffix = f"/{remainder}" if remainder else ""
+            return f"{scheme}://{host}/{login}/{name}{suffix}"
+    return None
+
+
 def cached_body_path(workdir: Path, branch: str, repo: str) -> Path:
     """Return the cached pull request body file of ``repo`` for ``branch``."""
     return workdir / ".bodies" / branch / f"{repo}.md"
@@ -481,7 +513,28 @@ def cmd_push(args: argparse.Namespace) -> int:
         has_changes = (
             git(target, "diff", "--cached", "--quiet", check=False).returncode != 0
         )
-        if not has_changes and not update_body:
+
+        # Commits already on the branch from a previous run that failed
+        # during the fork creation or the push: they still need pushing
+        # and a pull request.
+        local_commits = 0
+        try:
+            base = default_branch(target)
+            local_commits = int(
+                git(
+                    target,
+                    "rev-list",
+                    "--count",
+                    f"origin/{base}..{args.branch}",
+                    check=False,
+                ).stdout.strip()
+                or 0
+            )
+        except (RuntimeError, ValueError):
+            local_commits = 0
+        should_push = has_changes or local_commits > 0
+
+        if not should_push and not update_body:
             print("    no changes, skipping")
             results["skipped"].append(repo)
             continue
@@ -492,9 +545,11 @@ def cmd_push(args: argparse.Namespace) -> int:
                 results["failed"].append(repo)
                 continue
 
-            try:
+        try:
+            if has_changes:
                 git(target, "commit", "--quiet", "-m", args.message)
 
+            if should_push:
                 owner, name = repo.split("/", 1)
                 if login is None:
                     login = gh_login()
@@ -508,7 +563,14 @@ def cmd_push(args: argparse.Namespace) -> int:
                             f"could not create fork: {forked.stderr.strip()}"
                         )
                     remote, head = "fork", f"{login}:{args.branch}"
-                    fork_url = f"https://github.com/{login}/{name}.git"
+                    # Match the protocol of the clone's origin remote, so
+                    # ssh users get an ssh fork remote instead of https.
+                    origin_url = git(
+                        target, "remote", "get-url", "origin", check=False
+                    ).stdout.strip()
+                    fork_url = derive_fork_url(origin_url, login) or (
+                        f"https://github.com/{login}/{name}.git"
+                    )
                     if git(target, "remote", "get-url", "fork", check=False).returncode == 0:
                         git(target, "remote", "set-url", "fork", fork_url)
                     else:
@@ -537,12 +599,13 @@ def cmd_push(args: argparse.Namespace) -> int:
                     )
                 else:
                     git(target, "push", "--quiet", "-u", remote, args.branch)
-            except RuntimeError as error:
-                print(f"    failed to commit or push: {error}", file=sys.stderr)
-                results["failed"].append(repo)
-                continue
-        else:
-            # Nothing new to push, but there is a body to update.
+        except RuntimeError as error:
+            print(f"    failed to commit or push: {error}", file=sys.stderr)
+            results["failed"].append(repo)
+            continue
+
+        if not should_push:
+            # Nothing new to push, but there may be a body to update.
             print("    no new changes")
 
         prs = search_open_prs(repo, args.branch, ["number", "url"])
@@ -580,7 +643,7 @@ def cmd_push(args: argparse.Namespace) -> int:
             else:
                 print("    updated existing pull request")
             results["pushed"].append(repo)
-        elif has_changes:
+        elif should_push:
             create_cmd = [
                 "gh",
                 "pr",

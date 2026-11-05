@@ -70,6 +70,11 @@ editor, `git add`), then exit the shell to continue. Exit with no changes to
 mark the repository as failed. Without `-b`, `exec` runs on the current state
 of each clone rather than resetting a branch first.
 
+Repositories in the `failed` bucket are safe to re-run: if a `push` fails
+midway (for example the fork could not be created, or the network dropped),
+the next `push` picks up the commits the failed run left on the branch and
+pushes them.
+
 **Person B** reviews and merges:
 
 ```shell
