@@ -39,7 +39,8 @@ scripts/bulk-ops/bulk-ops.py clone -s charms
 scripts/bulk-ops/bulk-ops.py exec -s charms -b chore/update-ci \
   -- git apply "$PWD/patches/update-ci.patch"
 
-#    Preview the full diff of every repository before anything happens:
+#    Preview the full diff of every repository before anything happens
+#    (paths are absolute, so files open directly from the output):
 scripts/bulk-ops/bulk-ops.py push -s charms -b chore/update-ci \
   -m "chore: update CI workflow" --dry-run
 
@@ -104,18 +105,22 @@ decision. The common merge states:
 | State | Meaning |
 | --- | --- |
 | `CLEAN` | mergeable, checks pass |
-| `UNSTABLE` | mergeable, but a non-required check is failing or pending |
+| `UNSTABLE (2 failed)` | mergeable, but a non-required check is failing or still
+  running; the counts say which |
 | `BLOCKED` | a required check or review is missing |
 | `BEHIND` | the default branch moved ahead of the pull request |
 | `DIRTY` | merge conflicts; needs manual attention |
-| `UNKNOWN` | GitHub has not computed mergeability yet; re-run later |
+| `UNKNOWN` | GitHub could not determine the merge state yet; re-run
+  later (a pull request waiting on someone else's review is shown as
+  `BLOCKED`, since the review decision says so) |
 
 Review decisions are `no-review`, `REVIEW_REQUIRED`, `APPROVED`, and
 `CHANGES_REQUESTED`. `no open pull request` means no open pull request has
 that head branch: the repository produced no changes during `push` (a
 repository that already contains the change is skipped, which is expected
 when the change originates there), the pull request was closed, or it was
-merged.
+merged. Pass `-d`/`--diff` to also print each pull request's diff under its
+status line; when the output is a terminal, `gh` pages each diff as usual.
 
 The reviewer can approve inline with `merge --approve`, which records a real
 approval under their `gh` login on every pull request before merging:
