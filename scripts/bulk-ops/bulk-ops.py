@@ -61,6 +61,18 @@ def git(workdir: Path, *args: str, check: bool = True) -> subprocess.CompletedPr
     return result
 
 
+def has_staged_changes(workdir: Path) -> bool:
+    """Return True if the clone at ``workdir`` has staged changes."""
+    return git(workdir, "diff", "--cached", "--quiet", check=False).returncode != 0
+
+
+def has_conflict_markers(workdir: Path) -> bool:
+    """Return True if the clone at ``workdir`` contains conflict markers."""
+    return bool(
+        git(workdir, "grep", "-l", "^<<<<<<< ", "--", ".", check=False).stdout.strip()
+    )
+
+
 def load_repos(set_name: str) -> list[str]:
     """Resolve a repository set to a list of ``owner/repo`` names.
 
@@ -110,6 +122,21 @@ def repo_dir(workdir: Path, repo: str) -> Path:
         die(f"invalid repository '{repo}', expected 'owner/name'")
     owner, name = repo.split("/", 1)
     return workdir / owner / name
+
+
+def require_clone(workdir: Path, repo: str) -> Path | None:
+    """Return the clone directory of ``repo`` in ``workdir``.
+
+    Prints an error and returns None if the repository is not cloned.
+    """
+    target = repo_dir(workdir, repo)
+    if not (target / ".git").exists():
+        print(
+            "    not in the workdir; run 'bulk-ops.py clone -s <set>' first",
+            file=sys.stderr,
+        )
+        return None
+    return target
 
 
 def default_branch(workdir: Path) -> str:
@@ -268,13 +295,60 @@ def save_cached_bodies(
     return workdir / ".bodies" / branch
 
 
+# Check run conclusions and status context states that count as a failed
+# check; skipped, neutral, and successful ones count as neither.
+FAILED_CONCLUSIONS = (
+    "FAILURE",
+    "TIMED_OUT",
+    "CANCELLED",
+    "ACTION_REQUIRED",
+    "STARTUP_FAILURE",
+)
+FAILED_CONTEXT_STATES = ("FAILURE", "ERROR")
+
+
+def describe_pr_state(pr: dict) -> str:
+    """Describe the merge state of a pull request for the status output.
+
+    UNSTABLE is split into failing and pending checks, so a red check is
+    distinguishable from one that has not finished. UNKNOWN shows up while
+    a pull request is waiting on someone else's review; the review decision
+    says so, in which case the state is shown as the block it is.
+    """
+    state = pr.get("mergeStateStatus") or "UNKNOWN"
+    review = pr.get("reviewDecision") or "no-review"
+    if state == "UNKNOWN" and review in ("REVIEW_REQUIRED", "CHANGES_REQUESTED"):
+        return "BLOCKED"
+    if state == "UNSTABLE":
+        failed = 0
+        pending = 0
+        for check in pr.get("statusCheckRollup") or []:
+            if check.get("__typename") == "CheckRun":
+                if check.get("conclusion") in FAILED_CONCLUSIONS:
+                    failed += 1
+                elif check.get("status") in ("QUEUED", "IN_PROGRESS"):
+                    pending += 1
+            elif check.get("state") in FAILED_CONTEXT_STATES:
+                failed += 1
+            elif check.get("state") in ("PENDING", "EXPECTED"):
+                pending += 1
+        parts = []
+        if failed:
+            parts.append(f"{failed} failed")
+        if pending:
+            parts.append(f"{pending} pending")
+        if parts:
+            return f"UNSTABLE ({', '.join(parts)})"
+    return state
+
+
 def print_summary(set_name: str, results: dict[str, list[str]]) -> None:
     """Print the per-outcome summary shared by the commands."""
     print()
     print(f"Summary for set '{set_name}':")
     for label, repos in results.items():
         names = "".join(f" {repo}" for repo in repos)
-        print(f"  {label + ':':<10}{len(repos)}{names}")
+        print(f"  {label + ':':<11}{len(repos)}{names}")
 
 
 def cmd_clone(args: argparse.Namespace) -> int:
@@ -327,12 +401,8 @@ def cmd_exec(args: argparse.Namespace) -> int:
 
     for repo in repos:
         print(f"==> {repo}")
-        target = repo_dir(args.workdir, repo)
-        if not (target / ".git").exists():
-            print(
-                "    not in the workdir; run 'bulk-ops.py clone -s <set>' first",
-                file=sys.stderr,
-            )
+        target = require_clone(args.workdir, repo)
+        if target is None:
             failed.append(repo)
             continue
 
@@ -373,11 +443,11 @@ def cmd_exec(args: argparse.Namespace) -> int:
         shell = os.environ.get("SHELL") or "/bin/sh"
         subprocess.run([shell, "-i"], cwd=str(target), env=env)
         git(target, "add", "-A")
-        if git(target, "diff", "--cached", "--quiet", check=False).returncode == 0:
+        if not has_staged_changes(target):
             print("    no changes after recovery, marking as failed", file=sys.stderr)
             failed.append(repo)
             continue
-        if git(target, "grep", "-l", "^<<<<<<< ", "--", ".", check=False).stdout.strip():
+        if has_conflict_markers(target):
             print("    conflict markers remain, marking as failed", file=sys.stderr)
             failed.append(repo)
             continue
@@ -388,17 +458,21 @@ def cmd_exec(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def cmd_push(args: argparse.Namespace) -> int:
-    repos = load_repos(args.set)
-    require_gh()
-    title = args.title or args.message
-    login: str | None = None
+def resolve_bodies(
+    args: argparse.Namespace, repos: list[str]
+) -> tuple[dict[str, str | None], set[str], bool]:
+    """Determine the pull request body of each repository.
 
-    # Determine the pull request body of each repository: an explicit --body
-    # or --body-file wins, otherwise each repository defaults to its own
-    # pull request template. With --edit-body the body is opened in the
-    # editor before anything is pushed - once per distinct template, so a
-    # set of identical templates is a single editor session.
+    An explicit --body or --body-file wins; otherwise each repository
+    defaults to its own pull request template. With --edit-body the body is
+    opened in the editor before anything is pushed, one session per distinct
+    base text (explicit body, cached body, or template), so a set of
+    identical templates is a single editor session. Edited bodies are cached
+    in the workdir and reused by later push runs.
+
+    Returns the body per repository, which of them came from the cache, and
+    whether existing pull requests should have their bodies updated.
+    """
     explicit = None
     if args.body is not None:
         explicit = args.body
@@ -411,15 +485,11 @@ def cmd_push(args: argparse.Namespace) -> int:
     bodies: dict[str, str | None] = {}
     from_cache: set[str] = set()
     if args.edit_body:
-        # Open the body in the editor before anything is pushed, one session
-        # per distinct base text: an explicit --body/--body-file, a body
-        # cached by a previous run, or the repository's template. The edited
-        # bodies are cached in the workdir and reused by later push runs.
         groups: dict[str, list[str]] = {}
         for repo in repos:
             target = repo_dir(args.workdir, repo)
             if not (target / ".git").exists():
-                continue  # reported as a failure in the loop below
+                continue  # reported as a failure in the push loop
             base = explicit
             if base is None and not args.no_cached_body:
                 base = read_cached_body(args.workdir, args.branch, repo)
@@ -461,6 +531,16 @@ def cmd_push(args: argparse.Namespace) -> int:
                 bodies[repo] = template_text(target)
 
     update_bodies = args.edit_body or explicit is not None
+    return bodies, from_cache, update_bodies
+
+
+def cmd_push(args: argparse.Namespace) -> int:
+    repos = load_repos(args.set)
+    require_gh()
+    title = args.title or args.message
+    login: str | None = None
+
+    bodies, from_cache, update_bodies = resolve_bodies(args, repos)
 
     results: dict[str, list[str]] = {
         "previewed": [],
@@ -471,12 +551,8 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     for repo in repos:
         print(f"==> {repo}")
-        target = repo_dir(args.workdir, repo)
-        if not (target / ".git").exists():
-            print(
-                "    not in the workdir; run 'bulk-ops.py clone -s <set>' first",
-                file=sys.stderr,
-            )
+        target = require_clone(args.workdir, repo)
+        if target is None:
             results["failed"].append(repo)
             continue
 
@@ -516,9 +592,7 @@ def cmd_push(args: argparse.Namespace) -> int:
             continue
 
         update_body = update_bodies and bool(bodies.get(repo))
-        has_changes = (
-            git(target, "diff", "--cached", "--quiet", check=False).returncode != 0
-        )
+        has_changes = has_staged_changes(target)
 
         # Commits already on the branch from a previous run that failed
         # during the fork creation or the push: they still need pushing
@@ -545,11 +619,10 @@ def cmd_push(args: argparse.Namespace) -> int:
             results["skipped"].append(repo)
             continue
 
-        if has_changes:
-            if git(target, "grep", "-l", "^<<<<<<< ", "--", ".", check=False).stdout.strip():
-                print("    conflict markers remain, marking as failed", file=sys.stderr)
-                results["failed"].append(repo)
-                continue
+        if has_changes and has_conflict_markers(target):
+            print("    conflict markers remain, marking as failed", file=sys.stderr)
+            results["failed"].append(repo)
+            continue
 
         try:
             if has_changes:
@@ -628,7 +701,7 @@ def cmd_push(args: argparse.Namespace) -> int:
             # Nothing new to push, but there may be a body to update.
             print("    no new changes")
 
-        prs = search_open_prs(repo, args.branch, ["number", "url"])
+        prs = search_open_prs(repo, args.branch, ["number"])
         if prs is None:
             print(
                 "    failed to check for existing pull request",
@@ -719,7 +792,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     errors = 0
     for repo in repos:
         prs = search_open_prs(
-            repo, args.branch, ["url", "mergeStateStatus", "reviewDecision"]
+            repo,
+            args.branch,
+            [
+                "number",
+                "url",
+                "mergeStateStatus",
+                "reviewDecision",
+                "statusCheckRollup",
+            ],
         )
         if prs is None:
             errors += 1
@@ -728,9 +809,14 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"{repo:<40} no open pull request")
             continue
         for pr in prs:
-            state = pr.get("mergeStateStatus") or "unknown"
+            state = describe_pr_state(pr)
             review = pr.get("reviewDecision") or "no-review"
             print(f"{repo:<40} {pr['url']}\t{state}\t{review}")
+            if args.diff:
+                # The diff inherits the terminal, so gh pages it as usual.
+                subprocess.run(
+                    ["gh", "pr", "diff", "--repo", repo, str(pr["number"])]
+                )
     return 1 if errors else 0
 
 
@@ -745,7 +831,17 @@ def cmd_merge(args: argparse.Namespace) -> int:
     for repo in repos:
         print(f"==> {repo}")
 
-        prs = search_open_prs(repo, args.branch, ["number", "url", "mergeStateStatus"])
+        prs = search_open_prs(
+            repo,
+            args.branch,
+            [
+                "number",
+                "url",
+                "mergeStateStatus",
+                "reviewDecision",
+                "statusCheckRollup",
+            ],
+        )
         if prs is None:
             failed.append(repo)
             continue
@@ -755,7 +851,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
             continue
 
         pr = prs[0]
-        state = pr.get("mergeStateStatus") or "unknown"
+        state = describe_pr_state(pr)
 
         if args.dry_run:
             print(f"    would merge {pr['url']} (merge state: {state})")
@@ -978,6 +1074,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     status.add_argument(
+        "-d",
+        "--diff",
+        action="store_true",
+        help="also print the diff of each pull request",
+    )
+    status.add_argument(
         "-b",
         "--branch",
         required=True,
@@ -1004,8 +1106,8 @@ def build_parser() -> argparse.ArgumentParser:
         "-m",
         "--method",
         choices=("squash", "merge", "rebase"),
-        default="squash",
-        help="merge method (default: squash)",
+        default="rebase",
+        help="merge method (default: rebase)",
     )
     merge.add_argument(
         "--approve",
