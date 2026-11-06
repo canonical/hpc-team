@@ -41,7 +41,7 @@ jobs:
       )
     steps:
       - name: Backport to branch ${{ matrix.target }}
-        uses: kiegroup/git-backporting@95dbe6abbfa9f63036ff7ab3ebd1ad2600c74f5b # main
+        uses: kiegroup/git-backporting@4d5347eee212f8715e2d6a7ec1399efa9080a38b # main
         with:
           target-branch: ${{ matrix.target }}
           pull-request: ${{ github.event.pull_request.url }}
