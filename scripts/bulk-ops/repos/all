@@ -1,0 +1,16 @@
+# All repositories maintained directly as part of Charmed HPC.
+# Repositories that do not belong to a multi-repository set (charmed-hpc-terraform,
+# charmed-hpc-docs, hpc-team) are listed directly here.
+#
+# Note: dependency projects (juju, mysql-operators, traefik-k8s-operator, etc.)
+# are intentionally excluded - they are not maintained by the Charmed HPC team.
+canonical/slurm-charms
+canonical/filesystem-charms
+canonical/sssd-operator
+canonical/apptainer-operator
+canonical/openssh-operator
+canonical/slurmutils
+canonical/charmed-hpc-libs
+canonical/charmed-hpc-terraform
+canonical/charmed-hpc-docs
+canonical/hpc-team

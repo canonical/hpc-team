@@ -1,0 +1,7 @@
+# Charm repositories maintained directly as part of Charmed HPC.
+
+canonical/slurm-charms
+canonical/filesystem-charms
+canonical/sssd-operator
+canonical/apptainer-operator
+canonical/openssh-operator
