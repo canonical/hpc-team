@@ -4,6 +4,7 @@
 Primary trigger: a "/jira ABC-123, ABC-456" comment on a pull request.
 Keys resolve in order: comment command > labeled body line ("JIRA: ...") > branch name.
 The subtask assignee comes from the PR's CODEOWNERS review requests.
+When done, posts a result comment on the PR (reactions don't notify subscribers).
 
 Requires (env): JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, GITHUB_TOKEN, REPO,
 PR_NUMBER, GITHUB_TO_JIRA (JSON: GitHub login -> JIRA accountId).
@@ -38,8 +39,12 @@ LABEL_RE = re.compile(r"^\s*(?:JIRA|Fixes?|Resolves?|Closes?)\s*[:\s]\s*(.+)", r
 SUMMARY_MAX = 255  # JIRA summary length limit
 
 
+RESULTS = []
+
+
 def log(msg):
     print(f"jira-subtask: {msg}")
+    RESULTS.append(msg)
 
 
 def dedupe(keys):
@@ -65,7 +70,7 @@ def find_keys(pr):
     if COMMENT:
         keys = KEY_RE.findall(COMMENT)
         if not keys:
-            sys.exit(f"jira-subtask: '/jira' given but no issue key found in: {COMMENT!r}")
+            sys.exit(f"'/jira' given but no issue key found in: {COMMENT!r}")
         return dedupe(keys)
     keys = []
     for line in (pr.get("body") or "").splitlines():
@@ -126,7 +131,7 @@ def create_subtask(key, reviewer):
     r = requests.post(f"{JIRA}/rest/api/3/issue", json=payload, auth=AUTH,
                       headers={"Accept": "application/json"}, timeout=30)
     if r.status_code >= 300:
-        sys.exit(f"jira-subtask: create failed for {key}: {r.status_code} {r.text}")
+        sys.exit(f"create failed for {key}: {r.status_code} {r.text}")
     log(f"created {r.json()['key']} under {key} for {reviewer}")
 
 
@@ -155,5 +160,43 @@ def main():
             create_subtask(key, reviewer)
 
 
+def post_comment(body):
+    r = requests.post(
+        f"https://api.github.com/repos/{REPO}/issues/{PR_NUMBER}/comments",
+        headers=GH_HEADERS, json={"body": body}, timeout=30,
+    )
+    r.raise_for_status()
+
+
+def report():
+    lines = [msg.removeprefix("jira-subtask: ") for msg in RESULTS]
+    body = "**JIRA subtask command**\n\n" + "\n".join(f"- {line}" for line in lines)
+    run_url = os.environ.get("RUN_URL")
+    if run_url:
+        body += f"\n\n<sub>[Run logs]({run_url})</sub>"
+    try:
+        post_comment(body)
+        gh_output = os.environ.get("GITHUB_OUTPUT")
+        if gh_output:  # tells the workflow a comment was posted; no fallback needed
+            with open(gh_output, "a") as f:
+                f.write("comment_posted=true\n")
+    except requests.RequestException as e:
+        print(f"jira-subtask: failed to post result comment: {e}")
+
+
+def run():
+    failed = False
+    try:
+        main()
+    except SystemExit as e:  # sys.exit(msg) from handled errors
+        log(str(e.code) if e.code else "failed")
+        failed = True
+    except requests.RequestException as e:
+        log(f"request failed: {e}")
+        failed = True
+    report()
+    sys.exit(1 if failed else 0)
+
+
 if __name__ == "__main__":
-    main()
+    run()

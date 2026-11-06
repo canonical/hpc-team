@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   subtask:
@@ -35,7 +35,9 @@ jobs:
             -f content=eyes > /dev/null
 
       - name: Create JIRA subtasks
+        id: subtask
         env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
@@ -54,20 +56,14 @@ jobs:
           COMMENT: ${{ github.event.comment.body }}
         run: python .github/scripts/jira_subtask.py
 
-      - name: React on success
-        if: success()
+      # The script posts its own result comment; this only covers crashes
+      # where it died before it could report.
+      - name: Report unexpected failure
+        if: failure() && steps.subtask.outputs.comment_posted != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMENT_ID: ${{ github.event.comment.id }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
-            -f content=rocket > /dev/null
-
-      - name: React on failure
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          COMMENT_ID: ${{ github.event.comment.id }}
-        run: |
-          gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
-            -f content=confused > /dev/null
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --body "The \`/jira\` command run failed before it could report results. See the [run logs]($RUN_URL)."
