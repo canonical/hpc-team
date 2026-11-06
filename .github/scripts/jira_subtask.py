@@ -98,20 +98,22 @@ def issue_exists(key):
 
 
 def subtask_exists(key, reviewer):
-    jql = f'parent = "{key}" AND summary ~ "PR #{PR_NUMBER}" AND summary ~ "{reviewer}"'
+    repo = REPO.split("/")[-1]
+    jql = (f'parent = "{key}" AND summary ~ "PR #{PR_NUMBER}" '
+           f'AND summary ~ "{reviewer}" AND summary ~ "{repo}"')
     r = requests.post(f"{JIRA}/rest/api/3/search/jql", auth=AUTH,
                       json={"jql": jql, "fields": ["key"], "maxResults": 1},
                       timeout=30)
     return r.ok and bool(r.json().get("issues"))
 
 
-def create_subtask(key, reviewer, title):
+def create_subtask(key, reviewer):
     account_id = USER_MAP.get(reviewer)
     if not account_id:
         log(f"no JIRA mapping for '{reviewer}' — skipping subtask on {key}")
         return
-    prefix = f"PR #{PR_NUMBER} [{reviewer}]: "
-    summary = prefix + title[: SUMMARY_MAX - len(prefix)]
+    repo = REPO.split("/")[-1]
+    summary = f"{repo}: PR #{PR_NUMBER} - {reviewer}"[:SUMMARY_MAX]
     payload = {
         "fields": {
             "project": {"key": key.split("-")[0]},
@@ -150,7 +152,7 @@ def main():
             if subtask_exists(key, reviewer):
                 log(f"subtask for PR #{PR_NUMBER} / {reviewer} already exists on {key}")
                 continue
-            create_subtask(key, reviewer, pr["title"])
+            create_subtask(key, reviewer)
 
 
 if __name__ == "__main__":
