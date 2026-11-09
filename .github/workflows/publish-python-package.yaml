@@ -52,10 +52,36 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Check if version is already published
+        id: published
+        run: |
+          shopt -s nullglob
+          files=(dist/*.whl dist/*.tar.gz)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No distribution files found in dist/"
+            exit 1
+          fi
+
+          # Distribution filenames are of the form `<name>-<version>-...`,
+          # e.g. `charmed_hpc_libs-0.8.0-py3-none-any.whl`. PyPI package
+          # names are normalized per PEP 503: lowercase, `-` separators.
+          artifact=$(basename "${files[0]}")
+          name=$(printf '%s' "${artifact%%-*}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[_.]+/-/g')
+          version=$(printf '%s' "$artifact" | cut -d- -f2)
+
+          if curl -fsSL "https://pypi.org/pypi/${name}/${version}/json" > /dev/null; then
+            echo "${name} ${version} is already published to PyPI. Skipping upload."
+            echo "already=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${name} ${version} has not been published to PyPI yet."
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install uv
         run: sudo snap install astral-uv --classic
 
       - name: Publish to PyPI
+        if: steps.published.outputs.already == 'false'
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_PUBLISH_TOKEN }}
         run: uv publish

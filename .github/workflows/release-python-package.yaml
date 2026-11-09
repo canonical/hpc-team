@@ -16,6 +16,13 @@ name: Release Python package
 
 on:
   workflow_call:
+    outputs:
+      created:
+        description: "Whether a new version tag was created"
+        value: ${{ jobs.tag.outputs.created }}
+      version:
+        description: "The package version"
+        value: ${{ jobs.tag.outputs.version }}
 
 jobs:
   tag:
