@@ -122,6 +122,7 @@ jobs:
           fi
 
       - name: Install uv
+        if: steps.published.outputs.already == 'false'
         run: sudo snap install astral-uv --classic
 
       - name: Publish to PyPI
