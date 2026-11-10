@@ -1,0 +1,69 @@
+name: JIRA command
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  subtask:
+    # Only act on /jira comments made by trusted humans on pull requests
+    # (PR comments arrive via issue_comment; pull_request != null marks PRs)
+    if: >-
+      github.event.issue.pull_request != null &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      startsWith(github.event.comment.body, '/jira')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Acknowledge command
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
+            -f content=eyes > /dev/null
+
+      - name: Create JIRA subtasks
+        id: subtask
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          # GitHub login -> JIRA accountId (JIRA Cloud). To get an accountId:
+          #   curl -u EMAIL:TOKEN "https://YOUR-SITE.atlassian.net/rest/api/3/user/search?query=NAME"
+          GITHUB_TO_JIRA: '{"benschwaller": "ben.schwaller",
+                            "jedel1043": "julian.espina",
+                            "nuccitheboss": "jason.nucciarone",
+                            "dsloanm": "Dominic Sloan-Murphy",
+                            "AshleyCliff": "Ashley Cliff",
+                          }'
+          FIRST_REVIEWER_ONLY: "false"
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: python .github/scripts/jira_subtask.py
+
+      # The script posts its own result comment; this only covers crashes
+      # where it died before it could report.
+      - name: Report unexpected failure
+        if: failure() && steps.subtask.outputs.comment_posted != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --body "The \`/jira\` command run failed before it could report results. See the [run logs]($RUN_URL)."
