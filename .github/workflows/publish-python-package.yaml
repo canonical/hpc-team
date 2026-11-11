@@ -69,12 +69,16 @@ jobs:
           name=$(printf '%s' "${artifact%%-*}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[_.]+/-/g')
           version=$(printf '%s' "$artifact" | cut -d- -f2)
 
-          if curl -fsSL "https://pypi.org/pypi/${name}/${version}/json" > /dev/null; then
+          status=$(curl -sSL -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/${name}/${version}/json" || true)
+          if [ "$status" = "200" ]; then
             echo "${name} ${version} is already published to PyPI. Skipping upload."
             echo "already=true" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "$status" = "404" ]; then
             echo "${name} ${version} has not been published to PyPI yet."
             echo "already=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not verify whether ${name} ${version} is on PyPI (HTTP status: ${status})."
+            exit 1
           fi
 
       - name: Install uv
