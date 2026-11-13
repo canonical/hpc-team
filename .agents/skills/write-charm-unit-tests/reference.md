@@ -5,44 +5,47 @@ Companion to `SKILL.md`. Look things up here; the workflow and the rules live in
 
 ## Running the suite and getting a missing-lines report
 
-In charmed-hpc repos the entry point is `just unit <charm>`, which delegates to
-`scripts/repository.py unit <charm>`. That stages the charm into `_build/<charm>/` and
-runs the suite under `coverage`, then combines per-charm data into a root `.coverage`.
+The entry point is `just unit`, but what sits behind it depends on the repo layout:
+
+- **Monorepos** (slurm-charms, filesystem-charms): `just unit <charm>` delegates to
+  `scripts/repository.py unit <charm>`, which stages the charm into `_build/<charm>/`
+  and runs the suite under `coverage`, then combines per-charm data into a root
+  `.coverage`. `just unit` with no argument runs every charm; pass the charm name to
+  iterate quickly on one.
+- **Single-charm repos** (apptainer, openssh, sssd): no `repository.py` and no
+  `_build/` staging. `just unit` runs `coverage run -m pytest tests/unit` directly
+  against the repo's own `src/` (the justfile exports `PYTHONPATH=lib:src`), and the
+  charm builds with plain `charmcraft pack`.
+
+UHPC011 mandates only `just test` in the justfile. `just unit` exists in practice on
+every repo this skill is expected to run on, but if it is missing, try `just test` —
+check what it expands to first, since it may pull in more than the unit suite (e.g.
+integration tests).
 
 - Branch measurement requires `branch = true` under `[tool.coverage.run]` in the
   charm's (or root) `pyproject.toml`.
 - Missing-lines table, from the repo root:
-  `uv run coverage report --show-missing --skip-covered`. Add
+  `uv run coverage report --show-missing --skip-covered`. In a monorepo, add
   `--include='_build/<charm>/src/*'` if the staged charm sources do not appear.
-- `just unit` with no argument runs every charm; pass the charm name to iterate
-  quickly on one.
 
-### Running pytest directly
-
-The staged build dir is the import root, so this reproduces what `just unit <charm>`
-does:
-
-```
-PYTHONPATH=_build/<charm>/src:_build/<charm>/lib \
-  <venv>/bin/python -m pytest _build/<charm>/tests/unit
-```
-
-Useful when `uv` cannot write its cache (read-only `~/.cache/uv` in a sandbox) — `uv
-run` fails before pytest starts, but the existing `.venv` works. Add
-`-p no:cacheprovider` on a read-only tree.
+Always run the suite through `just` rather than invoking pytest directly — the
+recipe owns the import path, staging, and coverage setup for the repo layout.
 
 ### Troubleshooting
 
+- **`uv run` fails before pytest starts** when uv cannot write its cache (read-only
+  `~/.cache/uv` in a sandbox). Point `UV_CACHE_DIR` at a writable directory and rerun
+  the `just` recipe.
 - **Broken `pyproject.toml`** (e.g. unresolved merge conflict markers) breaks
   pytest/coverage config discovery: run with `-c <charm pyproject.toml>` and set
   `COVERAGE_RCFILE`. Unparseable TOML also takes down `ruff` and `uv` repo-wide while
   the tests still run, so check for it first:
   `grep -rn '<<<<<<<\|>>>>>>>' --include=*.toml --include=*.lock --include=*.py`.
-- **Stale staged copy.** A checkout with no `.venv` can borrow another checkout's
-  interpreter only if the charm `src/` trees match — diff them first. Signature skew
-  surfaces as a confusing `TypeError` inside the harness (e.g. `__init__() got an
-  unexpected keyword argument`), meaning the staged copy is stale, not that the test is
-  wrong. Delete stray files copied into another repo's gitignored `_build/`.
+- **Stale staged copy.** Signature skew between the staged `_build/<charm>/` tree and
+  the real sources surfaces as a confusing `TypeError` inside the harness (e.g.
+  `__init__() got an unexpected keyword argument`), meaning the staged copy is stale,
+  not that the test is wrong. Rerun `just unit <charm>` to re-stage, and delete stray
+  files copied into another repo's gitignored `_build/`.
 
 ## Mutation harness (Phase 4)
 
@@ -114,7 +117,10 @@ Helpers copied into the target repo are throwaway — delete them when done.
   `wait_unless` decorators bind at import time and cannot be patched — satisfy them
   with real state (files, mounts, relations). Conditions called inside a handler body
   resolve at call time and patch fine.
-- Departing units are always remote (`JUJU_DEPARTING_UNIT` is built from the remote
-  app name), so "this unit is departing" cannot be expressed through the harness. Call
-  the handler directly with a stub event and a comment explaining why — the one
-  sanctioned exception to the drive-real-events rule.
+- `relation-departed` fires on both the departing unit and the remaining ones, and
+  the harness emits it: `ctx.on.relation_departed(relation, remote_unit=N)`. The limit
+  is self-departure — `JUJU_DEPARTING_UNIT` is always built from the remote app name,
+  and a unit handling `relation-broken` cannot tell whether it is departing or the
+  relation itself is being removed. If behavior hinges on that distinction, call the
+  handler directly with a stub event and a comment explaining why — the one sanctioned
+  exception to the drive-real-events rule.

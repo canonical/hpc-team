@@ -40,9 +40,9 @@ writing a tortured test around it.
 ## Phase 1: Map coverage gaps to behavior, not line counts
 
 1. Run the suite under branch coverage and get the missing-lines report — in
-   charmed-hpc repos, `just unit <charm>` then
-   `uv run coverage report --show-missing --skip-covered` (see `reference.md` for the
-   full invocation and troubleshooting). Record the baseline pass/fail and warning
+   charmed-hpc repos, `just unit <charm>` (monorepo) or `just unit` (single-charm
+   repo), then `uv run coverage report --show-missing --skip-covered` (see
+   `reference.md` for the full invocation, both repo layouts, and troubleshooting). Record the baseline pass/fail and warning
    counts too; Phase 5 needs them to separate your noise from pre-existing noise.
 2. Read the source at every uncovered range and classify each gap: unexecuted handler
    bodies; error/edge branches; status-evaluation branches (the operator-facing
@@ -149,9 +149,10 @@ while the code is broken.
    assertion earns its keep when a plausible mutation would flip it (e.g.
    `restart()` → `reload()` flips `reload.assert_not_called()`) — even if the
    current handler never calls the method.
-10. **Name the failure mode in the docstring.** State the production breakage the test
-    guards against. A test whose author cannot name its failure mode is coverage
-    padding; delete it.
+10. **Describe the test and its goal in the docstring.** State what the test
+    exercises and the outcome it expects — do not name the production failure it
+    guards against. A test whose author cannot describe what it does and why is
+    coverage padding; delete it.
 11. **Use domain-realistic test data.** Values that would be invalid in production
     confuse reviewers and can mask validation gaps. Derive realistic values from the
     source — e.g. a managed service is typically named after the Juju application.
@@ -199,7 +200,7 @@ while the code is broken.
     Precedent: `slurmctld`'s `test_on_smtp_relation_*_{success,failure}` pairs.
 20. **Back every behavioral claim in the docstring with an assertion.** "Must not
     write a malformed key file" needs a file-content assertion that fails when the
-    claim is violated; otherwise the failure mode is narrative, not pinned.
+    claim is violated; otherwise the claim is narrative, not pinned.
     Corollary: prune arrange steps the exercised path never reaches — a mock for a
     call that cannot happen is noise.
 
@@ -255,14 +256,14 @@ load-bearing.
 
 When reviewing coverage-focused test additions (yours or another agent's):
 
-1. Read the source each test covers; confirm the documented failure mode is real and
-   its breakage would hurt in production.
+1. Read the source each test covers; confirm the behavior it pins is real and its
+   breakage would hurt in production.
 2. Confirm fixtures satisfy the handler's condition gates (`wait_unless` /
    `block_unless` decorators, leader state, required secrets, mounts, key files) —
    absence assertions are vacuous if a gate blocked execution.
 3. Coverage-padding tells: assertions on self-built mocks, tests of library or
-   framework behavior, docstrings that cannot name a failure mode, fixtures
-   duplicating existing ones, test bodies that branch on the parametrized input,
-   fixtures defined but never requested, docstring claims without matching
+   framework behavior, docstrings that state neither what the test does nor its goal,
+   fixtures duplicating existing ones, test bodies that branch on the parametrized
+   input, fixtures defined but never requested, docstring claims without matching
    assertions, and count assertions looser than exact (`> 0` where `== 1` holds).
 4. Flag the weakest tests so the user can judge whether they earn their place.
